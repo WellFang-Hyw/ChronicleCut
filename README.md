@@ -70,7 +70,7 @@ historical_story_gen/
 │   └── cli.py             命令行
 ├── scripts/
 │   ├── smoke_video.py     零 LLM 的媒体链路冒烟测试 ← 媒体出问题先跑它
-│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导，126 项）
+│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导，156 项）
 │   ├── probe_clean_images.py  零成本配图专项探测（clean 策略下的命中率/版权/年代）
 │   ├── rerender.py        从已有 metadata 重渲染（复用文稿和语音，只换配图/画面）
 │   ├── check_layout.py    量一帧里标题带和字幕带是否重叠（不靠肉眼）
@@ -303,24 +303,25 @@ Pillow 出**两层**图，运动交给 ffmpeg：
 要换文本模型：同时改 `src/hsg/config.py` 的 `TEXT_PROVIDER_LOCK` 和
 `config.yaml` 的 `llm.provider`，两处必须一致。
 
-### 4.2 语音：固定用克隆音色，语速 1.1
+### 4.2 语音：固定用系统音色 audiobook_male_1，语速 1.1
 
 ```yaml
 tts:
   minimax:
-    voice_id: "hsg_story_v2"   # 克隆音色
+    voice_id: "audiobook_male_1"   # 系统音色（默认）
     speed: 1.1
 ```
 
-- `hsg_story_v2` 由 `data/base_voice/api-response_2.mp3`（15.87s 参考音频）经
-  MiniMax `voice_clone` 克隆而来，挂在账号下可长期复用。
+- 2026-09-14 曾换成克隆音色 `hsg_story_v2`，试听后认为听感不佳，当天改回系统音色。
+  克隆流程本身可用，`hsg_story_v2` 仍挂在账号下：
+  `data/base_voice/api-response_2.mp3`（15.87s 参考音频）经 MiniMax `voice_clone` 克隆而来。
 - 克隆/换音频：`python scripts\clone_voice.py --check` 先验门槛，再
   `--voice-id <新id>`；工具会打印该往 config 里填什么。
-- **换音色或改语速后必须重跑 `run.bat probe-tts`**，用实测值覆盖
-  `story.chars_per_second`（当前 4.11 是旧音色 audiobook_male_1 的值，对新音色不成立）。
-  详见 §6。
+- **换音色或改语速后必须重新校准 `story.chars_per_second`**，详见 §6。
+  校准用 `python scripts\calib_rate.py`（0 成本，从已生成期的逐分镜时长反算），
+  不要直接填 `probe-tts` 的范文值 —— 那个偏快。
 - 想看两个音色的差别：`python scripts\tts_preview.py --script <脚本.md>
-  --voice hsg_story_v2 --voice audiobook_male_1 --announce`。
+  --voice audiobook_male_1 --voice hsg_story_v2 --announce`。
 
 ---
 
@@ -343,10 +344,13 @@ Python 读到的是空字符串），所以读取顺序是：
 
 - **时长靠章节数而不是靠"目标时长"**。`story.target_total_seconds` 只用来算比例
   和打日志；真正决定内容量的是 `story.chapters` 和 `seconds_per_chapter`。
-- **语速换算必须实测，而且必须跟上音色**。当前 `chars_per_second: 4.11` 是
-  **旧音色** `audiobook_male_1` + `speed=1.0` 的实测值，对现在的克隆音色
-  `hsg_story_v2` + `speed=1.1` **不成立**（克隆音色偏慢），必须重跑
-  `run.bat probe-tts` 用实测值覆盖，否则初始估算会偏、多花一轮改写+TTS。
+- **语速换算必须实测，而且必须跟上音色**。当前 `chars_per_second: 4.60` 是
+  系统音色 `audiobook_male_1` + `speed=1.1` 的实测值（从第 1–6 期 90 段
+  10760 字 / 2341.8 秒反算 = 4.59 字/秒）。
+  ⚠️ 换算值要用 `python scripts\calib_rate.py` 从**已生成期的逐分镜时长**反算，
+  不要直接填 `run.bat probe-tts` 的范文值 —— probe-tts 是连续合成，比流水线的
+  分镜合成快一截（克隆音色那次：范文 3.91 / 实际 3.45；系统音色 4.77 / 实际 4.59）。
+  换音色或改语速后必须重算，否则初始估算偏、多花一轮改写 + TTS。
   参考：edge 的 `zh-CN-YunxiNeural` 实测 4.75 字/秒@1.0、5.22@1.1。
 - **素材摘要质量一般**（Bing 摘要会混进游戏站、诗文站）。它的定位只是锚点，
   事实准确性最终靠审校层。

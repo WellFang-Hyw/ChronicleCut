@@ -19,21 +19,25 @@ story:
   # 硬性区间：成片语音总时长必须落在这个范围内，超了会自适应改写
   min_total_seconds: 300      # 5 分钟
   max_total_seconds: 600      # 10 分钟
-  # 语速换算：中文播报实测值。
-  # 实测记录：audiobook_male_1 音色 / speed=1.0 →
-  #   227 字范文合成 55.19 秒 = 4.11 字/秒
-  # （对比：male-qn-jingying 资讯播报音色 speed=1.05 约 4.6-4.8 字/秒；
-  #   有声书音色更慢更有停顿感，适合讲故事）
-  # ★ 换音色或改语速后，重新跑 `python run.py probe-tts` 校准这个数字
+  # 语速换算：中文播报实测值。★ 换音色或改语速后必须重新校准这个数字。
   #
-  # 实测记录（2026-09-14，克隆音色 hsg_story_v2 / speed=1.1）：
-  #   probe-tts 连续范文 227 字 58.00 秒           = 3.91 字/秒
-  #   真实分镜合成（同一篇稿子 1368 字 / 10 段）    = 3.45 字/秒 ← 取这个
-  # 取 3.45 的原因：流水线是**按分镜**合成的，每段都带 TTS 的首尾静音，
-  #   所以实际产出比 probe-tts 的连续范文慢一截。用 3.91 写稿会偏长、
-  #   容易顶到区间上限并多触发一轮自适应改写。
-  #   （参照：旧音色 audiobook_male_1 1.0 速 4.11、1.1 速实测 4.63）
-  chars_per_second: 3.45
+  # 当前值来源（2026-09-14，系统音色 audiobook_male_1 / speed=1.1）：
+  #   从第 1–6 期的脚本反算得来 —— 脚本里逐分镜记了字数与实测时长：
+  #     90 段 / 10760 字 / 2341.8 秒 = 4.59 字/秒（逐段中位数 4.60，范围 3.65–5.49）
+  #   交叉验证：旧记录 4.11 是 1.0 速的值，×1.1 = 4.52，与实测的 4.59 吻合。
+  #   probe-tts 连续范文给的是 4.77 —— 偏快，不要直接拿它当值。
+  #
+  # 为什么不用 probe-tts 的连续范文值：流水线是**按分镜**逐段合成的，
+  #   每段都带 TTS 的首尾静音，实际产出比连续范文慢一截
+  #   （克隆音色那次实测：范文 3.91 / 流水线实际 3.45）。
+  #   用偏快的值写稿会偏长，容易顶到区间上限并多触发一轮自适应改写。
+  #
+  # 历史实测（留档）：
+  #   audiobook_male_1 / 1.0               → 范文 227 字 55.19 秒 = 4.11 字/秒
+  #   克隆音色 hsg_story_v2 / 1.1（已弃用） → 范文 3.91、流水线实际 3.45 字/秒
+  #   （对比：male-qn-jingying 资讯播报音色 1.05 速约 4.6-4.8 字/秒；
+  #     有声书音色更慢更有停顿感，适合讲故事）
+  chars_per_second: 4.60
   # 章节数 + 每章目标时长（秒）
   # ★ 时长主要靠这两个旋钮；target_total_seconds 只用来算比例和打日志
   chapters: 6
@@ -123,18 +127,17 @@ tts:
     base_url: "https://api.minimaxi.com/v1"
     # speech-2.6-hd 音质最好；speech-02-turbo 更快更便宜
     model: "speech-2.6-hd"
-    # 讲故事的音色。audiobook_male_1 是「有声书」男声，比资讯播报音色更耐听
-    # ---- 已换成克隆音色（2026-09-14）----
-    # hsg_story_v2 是用 data/base_voice/api-response_2.mp3（15.87s 参考音频）
-    # 通过 MiniMax voice_clone 克隆出来的音色，账号内可长期复用。
-    # 重做/换名：python scripts/clone_voice.py --voice-id <新id>
-    # 想改回系统音色：把下面一行换回 "audiobook_male_1"
-    # ⚠️ 换音色后 chars_per_second（4.11）不再适用 —— 那是 audiobook_male_1 的实测值。
-    #    克隆音色实测偏慢（该样本 30 字读了 8.53 秒 ≈ 3.5 字/秒），
-    #    必须先跑 `run.bat probe-tts` 重新校准，否则时长估算偏短、成片会超区间。
-    voice_id: "hsg_story_v2"
+    # 讲故事的音色。audiobook_male_1 是「有声书」男声，比资讯播报音色更耐听。
+    # ---- 2026-09-14 换回系统默认音色 ----
+    # 中间试过克隆音色 hsg_story_v2（用 data/base_voice/api-response_2.mp3 经
+    # MiniMax voice_clone 克隆），听感不佳，用户决定换回系统音色 audiobook_male_1。
+    # 克隆流程本身是好的，想再试：python scripts/clone_voice.py --voice-id hsg_story_v2
+    # 再把它填回下面一行即可。
+    # ⚠️ 换音色后 chars_per_second 必须重跑 `run.bat probe-tts` 重新校准
+    #    （音频缓存 key = 文本 + 音色 + 语速，换音色不会静默复用旧语音，但时长估算会失准）。
+    voice_id: "audiobook_male_1"
     # 历史叙事语速放慢一点，1.0 为标准
-    # 2026-09-14 从 1.0 提到 1.1（克隆音色本身偏慢，拉快一点）
+    # 2026-09-14 从 1.0 提到 1.1；换回系统音色后仍保持 1.1（用户指定）
     # ⚠️ 改语速会同时改掉两样东西：
     #   ① 音频缓存 key（audio_tag 含语速）→ 旧语音不会被复用，会重新合成，这是对的
     #   ② 字/秒换算失效 → 必须重跑 `run.bat probe-tts` 校准 story.chars_per_second

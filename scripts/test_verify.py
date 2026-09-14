@@ -696,7 +696,12 @@ def test_generate_image_prompt() -> None:
     cfg = load_config()
     p = images.build_generate_prompt("清代 铜钱 串钱 道光通宝 实物", cfg)
     check_true("提示词含分镜检索词", "道光通宝" in p)
-    check_true("提示词含禁文字后缀", "不要出现任何文字" in p or "无文字" in p)
+    # 不要断言后缀的具体措辞 —— 它按实测结论改过好几版（工笔/绢本会诱发书画题跋、
+    # 「摄影」会诱发图库水印，最后定在器物静物向）。这里校验「意图」：
+    # ① 配置里的后缀原样进了提示词；② 后缀必须同时禁掉文字、印章、水印。
+    sfx = str(cfg.images.get("generate_style_suffix") or "")
+    check_true("提示词里有风格后缀", bool(sfx) and sfx in p)
+    check_true("风格后缀禁文字/印章/水印", all(k in sfx for k in ("文字", "印章", "水印")))
     check_true("提示词不超过接口上限 1500", len(p) <= 1500)
 
     cfg.images["generate_style_suffix"] = "只画器物，不要人"

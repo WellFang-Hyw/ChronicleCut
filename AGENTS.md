@@ -32,32 +32,39 @@ MiniMax **只**用于语音（TTS 与音色克隆）。这条有三层锁，改�
 真要换文本模型：必须**同时**改 `config.py` 的 `TEXT_PROVIDER_LOCK` 和 `config.yaml` 的
 `llm.provider`，两处一致才放行。用户对这条反复强调过 —— 他不要口头确认，要能跑出来的证据。
 
-### 2.2 配音固定用克隆音色，语速 1.1
+### 2.2 配音固定用系统音色 audiobook_male_1，语速 1.1
 
-用户 2026-09-14 指定：
+用户 2026-09-14 先是指定换成克隆音色 `hsg_story_v2`，试听后认为听感不佳，
+当天改回系统默认音色 `audiobook_male_1`，语速保持 1.1：
 
 ```yaml
 tts:
   minimax:
-    voice_id: "hsg_story_v2"    # 克隆音色，不要换回 audiobook_male_1
-    speed: 1.1                  # 语速 1.1（1.0 太慢）
+    voice_id: "audiobook_male_1"   # 系统音色（默认）
+    speed: 1.1                     # 语速 1.1（1.0 太慢）
 ```
 
-- `hsg_story_v2` 是用 `data/base_voice/api-response_2.mp3`（15.87s 参考音频）
-  经 MiniMax `voice_clone` 克隆出来的音色，挂在账号下可长期复用。
-- 重做/换参考音频：`python scripts\clone_voice.py --check` 先验，再
-  `--voice-id <新id>` 克隆，然后填回上面两行。
+- 克隆流程本身可用（`hsg_story_v2` 仍挂在账号下）：`data/base_voice/api-response_2.mp3`
+  （15.87s 参考音频）经 MiniMax `voice_clone` 克隆而来。
+  想再试克隆音色：`python scripts\clone_voice.py --check` 先验 → `--voice-id <id>` 克隆
+  → 把 id 填回上面两行。
 - **换音色或改语速后必须重新校准语速换算**：
 
   ```bat
-  run.bat probe-tts        :: 实测新音色/新语速的字-秒，用它覆盖 story.chars_per_second
+  run.bat probe-tts        :: 先看个大概
   ```
 
-  ⚠️ 当前 `story.chars_per_second: 4.11` 是**旧音色 audiobook_male_1 / 1.0 速**的实测值。
-  换成克隆音色 + 1.1 速之后它不成立，必须用 probe-tts 的实测值覆盖。
-  在覆盖之前，时长估算会偏乐观（可能多触发一轮自适应改写）。
-  不要拿单句样本反推速率去凑一个值 —— 短句带头尾停顿，反推会偏低，
-  等于给自己造一个「看着合理、其实没依据」的数字。
+  ⚠️ 但 **probe-tts 的值偏快，不要直接填**。它是整篇范文一次合成，
+  而流水线是按分镜逐段合成、每段都带首尾静音。正确的做法是拿实拍的
+  逐分镜时长反算（`data/output/*_脚本.md` 里每段都记着字数与时长）：
+
+  - 当前值：`story.chars_per_second: 4.60`
+    （来源：第 1–6 期 90 段 / 10760 字 / 2341.8 秒 = 4.59 字/秒）
+  - 同时期 probe-tts 给 4.77，克隆音色那次范文 3.91 vs 实际 3.45，差的就是这一段。
+
+  0 成本反算脚本：`python scripts\calib_rate.py`（含方法自校验：拿已知值的那一期
+  复算，算得出来才信）。不要拿单句样本反推速率去凑一个值 —— 短句带头尾停顿，
+  反推会偏低，等于给自己造一个「看着合理、其实没依据」的数字。
 
 ---
 
@@ -86,7 +93,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（126 项，不调 API）
+run.bat test                              :: 零成本回归测试（156 项，不调 API）
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
@@ -96,7 +103,7 @@ python scripts\rerender.py                :: 复用文稿+语音，只重做配�
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
 
-**改完代码先跑 `run.bat test`**（126 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（156 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
