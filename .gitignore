@@ -1,0 +1,25 @@
+# 密钥
+.env
+
+# 产物 / 缓存
+data/audio/
+data/cache/
+data/images/
+data/material/
+data/preview/
+data/segments/
+data/slides/
+data/tmp/
+data/output/
+data/bgm/*.mp3
+!data/bgm/.gitkeep
+
+# python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.claude/
+.opencode/

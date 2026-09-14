@@ -1,0 +1,353 @@
+# ============================================================
+#  historical_story_gen  配置文件
+#  历史小故事 → DeepSeek 写稿 → TTS 配音 → 配图 + 字幕 → 成片
+#  所有可调参数集中在这里，改完直接生效，无需改代码
+# ============================================================
+
+# ---------- 1. 故事结构 / 时长 ----------
+story:
+  # ---- 切入方式（内容视角）----
+  #   small  小切口（默认）：整期只回答一个具体的日常问题，再用史实把答案讲成故事。
+  #          例：「流放三千里：被流放的人一路上靠什么活下来？」
+  #              「城破那一天：官员、商人、僧人、工匠各自的结局」
+  #              「官员出差：从京城到广州，走多久、住哪儿、路上花多少钱？」
+  #          —— 选题池、大纲、写稿、史实审校的提示词都跟着切到这个模式。
+  #   event  事件式（旧行为）：直接讲一场战役 / 一次变法的来龙去脉。
+  angle_mode: "small"
+  # 目标总时长（秒）。需求是 5-10 分钟，默认 7 分钟（居中）。
+  target_total_seconds: 420
+  # 硬性区间：成片语音总时长必须落在这个范围内，超了会自适应改写
+  min_total_seconds: 300      # 5 分钟
+  max_total_seconds: 600      # 10 分钟
+  # 语速换算：中文播报实测值。
+  # 实测记录：audiobook_male_1 音色 / speed=1.0 →
+  #   227 字范文合成 55.19 秒 = 4.11 字/秒
+  # （对比：male-qn-jingying 资讯播报音色 speed=1.05 约 4.6-4.8 字/秒；
+  #   有声书音色更慢更有停顿感，适合讲故事）
+  # ★ 换音色或改语速后，重新跑 `python run.py probe-tts` 校准这个数字
+  #
+  # ⚠️ 待重新校准（2026-09-14）：音色已换成克隆 hsg_story_v2、语速提到 1.1，
+  #    下面这个 4.11 是**旧音色 audiobook_male_1 / 1.0 速**的实测值，对新音色不成立。
+  #    为什么没有先填一个估算值：唯一可用的依据是克隆音色单句样本
+  #    （30 字 8.53 秒 ≈ 3.5 字/秒），而短句带头尾停顿、单位字数更慢，
+  #    拿它反推长稿速率会偏低 —— 那等于又造一个看着合理、其实没依据的数字。
+  #    所以先保留原值并标注，MiniMax 余额恢复后立刻跑 probe-tts 用实测值覆盖。
+  chars_per_second: 4.11
+  # 章节数 + 每章目标时长（秒）
+  # ★ 时长主要靠这两个旋钮；target_total_seconds 只用来算比例和打日志
+  chapters: 6
+  seconds_per_chapter: 68
+  # 每个「分镜」的目标时长（秒）。一个分镜 = 一张图 + 一段字幕 + 一段语音
+  # 分镜越短画面切换越快，20-25 秒是比较耐看的节奏
+  seconds_per_scene: 22
+  # 片头 / 片尾
+  intro_speak: true
+  intro_seconds_pad: 1.2
+  outro: true
+  outro_seconds: 4.0
+  outro_title: "本期故事讲完了，我们下期再见"
+  # 章节标题是否需要 LLM 起（关掉则用「第一章」这种机械编号）
+  chapter_headings: true
+
+# ---------- 2. 素材（可选，用作史实锚点）----------
+# 注意：维基百科 / Wikimedia Commons 在国内不可访问（实测超时），
+#       百度百科有人机校验（实测 403），所以素材源用 Bing 检索摘要。
+#       摘要偏杂，只作为「人名/年份的参考锚点」，不强制模型照抄。
+material:
+  enabled: true
+  provider: "bing"          # bing | none
+  max_queries: 6            # 最多发几路检索（话题 + 章节要点）
+  snippets_per_query: 8
+  timeout: 20
+  # 素材里出现这些站点名会被丢掉（游戏站、诗文站对历史叙事是噪声）
+  drop_if_contains: ["游戏", "新服", "客户端", "攻略", "手游", "下载", "官网"]
+
+# ---------- 3. 文本大模型（写稿）----------
+# ⚠️ 已锁定：文本内容只用 DeepSeek，MiniMax 只允许用于语音合成。
+#    锁是硬性的（src/hsg/config.py 的 TEXT_PROVIDER_LOCK + assert_text_provider）：
+#    把下面 provider 改成别的，启动时直接报错，不会悄悄换掉文本模型。
+#    CLI 的 --provider 也只接受 deepseek。
+llm:
+  provider: "deepseek"          # 已锁定，改这里无效
+  max_tokens: 8192
+  max_tokens_cap: 32768
+  timeout: 180
+  # 写稿温度：历史叙事要稳，别太放飞
+  outline_temperature: 0.6
+  writer_temperature: 0.65
+  # 并发写稿（按章节并行）
+  concurrency: 4
+  deepseek:
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
+  # ---- 以下两段保留但不生效（文本模型已锁定 deepseek）----
+  minimax:
+    base_url: "https://api.minimaxi.com/v1"
+    model: "MiniMax-M2.7-highspeed"
+  aliyun:
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen3.7-max"
+
+# ---------- 4. 史实校验 ----------
+verify:
+  enabled: true
+  # 程序化：年份是否落在故事所处的年代区间内（超出的会被点名）
+  year_range_check: true
+  # 程序化：同一个人名在全文里的写法是否一致
+  # ⚠️ 默认关闭：中文没有词边界，n-gram 粗抽专名会大量跨词切分产生误报
+  #    （实测第一次跑出 16 条全是误报）。这项检查交给 llm_audit 做更准。
+  name_consistency_check: false
+  # LLM 审校：让模型以「史实校对员」身份逐条挑错（年份/人名/地名/事件因果）
+  llm_audit: true
+  # ---- 写稿前的「锚点核查」----
+  # 小切口题材靠具体史实撑，模型会顺手编一个看起来合理的出处
+  # （实跑出现过「《户部则例》记载递解人犯每日给米一升」这种查无此条的引用）。
+  # 这道闸门在写稿之前逐条核查大纲给的史实锚点：
+  #   ok     保留
+  #   unsure 降级标注 —— 写稿时只能说「史料记载不一 / 没明确规定」
+  #   wrong  直接删掉
+  fact_audit: true
+  # ---- 出片前的复检闸门 ----
+  # 审校发现问题会带纠正意见重写章节，但「重写之后有没有真的改好」必须再验一遍。
+  # 复检仍有必修问题时：
+  #   block_on_fail: false（默认）→ 照常出片，但把未解决项写进稿件的
+  #                                 「待人工核对」清单，并在日志里显著提示
+  #   block_on_fail: true         → 直接中止（退出码 3），不出片
+  # 建议：自己看的片子用 false（不完全阻断）；要发布的用 true。
+  block_on_fail: false
+  max_retries: 1
+
+# ---------- 5. 语音合成（TTS）----------
+tts:
+  provider: "minimax"
+  minimax:
+    base_url: "https://api.minimaxi.com/v1"
+    # speech-2.6-hd 音质最好；speech-02-turbo 更快更便宜
+    model: "speech-2.6-hd"
+    # 讲故事的音色。audiobook_male_1 是「有声书」男声，比资讯播报音色更耐听
+    # ---- 已换成克隆音色（2026-09-14）----
+    # hsg_story_v2 是用 data/base_voice/api-response_2.mp3（15.87s 参考音频）
+    # 通过 MiniMax voice_clone 克隆出来的音色，账号内可长期复用。
+    # 重做/换名：python scripts/clone_voice.py --voice-id <新id>
+    # 想改回系统音色：把下面一行换回 "audiobook_male_1"
+    # ⚠️ 换音色后 chars_per_second（4.11）不再适用 —— 那是 audiobook_male_1 的实测值。
+    #    克隆音色实测偏慢（该样本 30 字读了 8.53 秒 ≈ 3.5 字/秒），
+    #    必须先跑 `run.bat probe-tts` 重新校准，否则时长估算偏短、成片会超区间。
+    voice_id: "hsg_story_v2"
+    # 历史叙事语速放慢一点，1.0 为标准
+    # 2026-09-14 从 1.0 提到 1.1（克隆音色本身偏慢，拉快一点）
+    # ⚠️ 改语速会同时改掉两样东西：
+    #   ① 音频缓存 key（audio_tag 含语速）→ 旧语音不会被复用，会重新合成，这是对的
+    #   ② 字/秒换算失效 → 必须重跑 `run.bat probe-tts` 校准 story.chars_per_second
+    speed: 1.1
+    vol: 1.0
+    pitch: 0
+    sample_rate: 32000
+    bitrate: 128000
+    format: "mp3"
+    language_boost: "Chinese"
+  # 兜底：minimax 失败时回退到免费的 edge-tts（需要 pip install edge-tts）
+  # ⚠️ 实测教训：兜底代码写了但没装 edge-tts，等于没有兜底 —— MiniMax 一欠费，
+  #    18 段语音全灭（2026-09-11 真踩过）。装好之后 `--tts-provider edge` 可以直接
+  #    用免费语音跑通全流程（不做发布时当试音/验证用）。
+  fallback_edge_tts: true
+  edge_voice: "zh-CN-YunxiNeural"
+  # edge-tts（免费）独立配置：--tts-provider edge 时读这里
+  # 常见音色：zh-CN-YunxiNeural（男·青年）、zh-CN-YunjianNeural（男·浑厚）、
+  #          zh-CN-XiaoxiaoNeural（女·通用）
+  edge:
+    voice_id: "zh-CN-YunxiNeural"
+    speed: 1.0
+  timeout: 180
+  concurrency: 4
+  # 合成粒度：scene（按分镜合成，画面切换点天然对齐语音停顿）| chapter
+  granularity: "scene"
+
+# ---------- 6. 配图 ----------
+images:
+  # ---- 版权策略（这是配图的第一原则）----
+  #   clean  只用版权干净的图库（默认）：博物馆/美术馆开放接口（CC0 / 公共领域）
+  #          与免费商用图库（Unsplash / Pexels）。**不会出现版权未明的图。**
+  #   mixed  干净图库优先，找不到才退回关键词检索（cn.bing.com 的图版权未明，
+  #          有被追偿的风险 —— 只在赶时间、且自己能判断风险时用）
+  # 实测（2026-09，国内网络）：无 key 且能直连的公共领域源只有下面三家博物馆；
+  # Openverse 超时、美国国会图书馆被 Cloudflare 拦、Wikimedia Commons 不可达。
+  license_policy: "clean"
+  # 参与检索的图源。带 key 的在没配 key 时自动跳过，不影响运行。
+  #
+  # ⚠️ 默认只有 cleveland 一个，这是**实测**的结果（2026-09，国内网络），
+  #    「搜得到」不等于「下得动」—— 下面每个源都实际拉过图测过速度：
+  #   cleveland  克利夫兰艺术博物馆 CC0，317 KB/s ✅ 带年代字段，可按时年代匹配，主力
+  #   pexels     Pexels 免费商用，233 KB/s ✅ 但需 PEXELS_API_KEY，且是现代摄影
+  #   unsplash   Unsplash 免费商用，33 KB/s 🟡 需 UNSPLASH_ACCESS_KEY，同是现代摄影
+  #   met        大都会 CC0，搜索正常但图服务器只有 **20 KB/s** ❌ 一张要几分钟，已排除
+  #   artic      芝加哥艺术馆 公共领域，搜索结果正常但图床一律 **403** ❌ 已排除
+  #   si/rijks   需 key，未测（国内能否直连未知）
+  #   bing       版权未明，仅 mixed 模式参与
+  # 想换/加源：改这一行即可；配了 key 之后把名字加进来就会生效。
+  # 建议先跑 `run.bat probe-images --download` 量一遍真实下载速度再决定。
+  providers: ["cleveland", "pexels", "unsplash"]
+  per_scene: 1              # 每个分镜用几张图（>1 会平均分配该分镜时长）
+  # 每个分镜最多试几个检索词（LLM 会给 1-3 个）
+  max_queries_per_scene: 3
+  # 每路检索取多少候选
+  candidates_per_query: 30
+  # ---- 兜底检索词 ----
+  # 实测：分镜自己的检索词太具体时（"market town"/"workshop"），馆里根本没有对应
+  # 藏品，会整段没图。这时用「时代 + 泛画种」再搜一轮 —— 讲明末的段落配一幅
+  # 明代山水/风俗画，比一个渐变底图强得多。
+  fallback_queries: ["明代 古画", "中国古代 风俗画", "古代 生活场景 古画"]
+  fallback_queries_en: ["Ming dynasty painting", "Chinese genre painting figures",
+                        "Chinese album painting landscape"]
+  # ---- 「古画/文物向」优先 ----
+  # 历史题材里，一幅古画或一件文物比景区照片合适得多。
+  # 除了模型给的检索词，再补一路「检索词 + 后缀」的检索，这一路的结果优先用。
+  # 注意：只对 bing（中文检索）生效 —— 博物馆接口是英文索引，
+  # 英文检索词由大纲阶段直接产出（image_queries_en）。
+  # 如果这一路一张都用不了，会自动退回普通检索结果（不会因此没图）。
+  art_query_suffixes: ["古画", "文物", "博物馆 藏品"]
+  # 落在这些站点上的结果降权（旅游/素材/壁纸站，以及 AI 生成图库 ——
+  # 实跑搜「函谷关遗址」拿到过带电线杆的现代景区照；
+  # 搜「明代城墙」拿到过昵图网的 AI 生成图，画面上还印着 AIGC 水印）。
+  # 只有优选组全灭时才会用它们。
+  drop_page_keywords: ["qunar", "ctrip", "trip", "travel", "旅游", "门票", "攻略",
+                       "酒店", "线路", "sucai", "素材", "壁纸", "模板", "摄图",
+                       # 素材图库 / AI 生成图库（历史题材最忌讳这两类）
+                       "nipic", "昵图", "58pic", "千图", "包图", "觅知", "veer",
+                       "pngtree", "ooopic", "zhitu", "qiantu", "55.la",
+                       "aigc", "ai生成", "ai绘画", "ai作图", "即梦", "jimeng",
+                       "midjourney", "doubao", "豆包", "文心一格",
+                       # 新闻门户：它们的图几乎都打了自家水印，
+                       # 而「成片里不出现别家站名」是硬要求（实测拿到过长江网水印的图）
+                       "sina.com", "sina.cn", "ifeng.com", "guancha.cn", "sohu.com",
+                       "163.com", "qq.com", "toutiao", "baijiahao", "thepaper",
+                       "长江网", "澎湃", "百家号", "观察者"]
+  # ---- 优先站点：博物馆 / 档案馆 / 美术馆 / 拍卖行 / 古籍库 ----
+  # 这些来源的图通常没有水印，且年代与器物信息可靠（实测国博、昆明博物馆、
+  # 雅昌拍卖的图干净可用）。命中这些关键字的候选排在同类最前面。
+  prefer_page_keywords: ["chnmuseum", "dpm.org", "dpm.org.cn", "artic.edu", "metmuseum",
+                         "artron", "nlc.cn", "ctext", "shuge", "kaogu", "ncha",
+                         "museum", "博物馆", "博物院", "美术馆", "图书馆", "档案馆",
+                         "院藏", "馆藏", "藏品", "出土", "文物局", "考古"]
+  # ---- 文化圈过滤（博物馆图源的必需项）----
+  # 博物馆接口是关键词匹配：版权再干净也可能离题 —— 实测搜
+  # "Ming dynasty painting city wall" 时，芝加哥艺术馆返回了《大碗岛的星期天》，
+  # 大都会返回了波斯手抄本。讲明代故事的片子里放一张莫奈，比放现代照片还糟。
+  # 默认只保留中国相关作品；讲日本/欧洲故事时把 culture_keywords 换掉即可。
+  culture_filter: true
+  culture_keywords: ["Chinese", "China", "中国"]
+  # 大都会的搜索只给 objectID，每件要再请求一次详情 —— 不限部门的话一个检索词
+  # 能拖掉几分钟。6 = Asian Art（亚洲艺术部），讲中国题材时用它最省时也最准。
+  met_department_id: 6
+  met_max_objects: 9        # 最多拉多少件详情（每件都是一次额外请求）
+  met_max_results: 6        # 一个检索词最多采用几件（再多也没用，只会拖时间）
+  timeout_detail: 12        # 详情请求超时（秒），比主超时短一些
+  # 单张图体积上限（MB）。博物馆原图常有大几十 MB 的，画布最多 4K，超限直接跳过
+  max_mb: 25
+  # 单张图下载耗时超过这个秒数就在日志里提示（慢图源会拖垮整期）
+  slow_download_warn: 25
+  # 分辨率门槛：低于这个尺寸的图不要（糊图放大了很难看）
+  min_width: 700
+  min_height: 480
+  # 横向图优先（横屏版好看），但竖屏版会重新裁切，所以竖图也接受
+  max_aspect: 2.6
+  # 平均哈希去重：相似度低于这个汉明距离视为「同一张图」，不重复用
+  dedupe_hamming: 6
+  # 下载并发
+  concurrency: 4
+  timeout: 25
+  # 场景图注旁边是否显示「版权｜出处」（如 CC0 公共领域｜克利夫兰艺术博物馆）
+  # 公共领域与免费商用图库都不强制署名，打开后版权链路更清楚
+  show_credit: false
+  # 图源可用性会写入 data/images/_sources.json，方便排查
+  # 兜底：完全找不到图时用生成的渐变底图（不会留空画面）
+  allow_fallback_bg: true
+
+# ---------- 7. 视频输出 ----------
+video:
+  # 同时生成竖屏和横屏两种
+  orientations:
+    portrait:  { width: 1080, height: 1920 }
+    landscape: { width: 1920, height: 1080 }
+  fps: 30
+  # 每个分镜的画面停留 = 语音时长 + 这个余量（秒），保证语音不被切断
+  tail_padding: 0.55
+  # 画面运动（把配图做成缓慢横移，静态图不会显得死）
+  motion: true
+  # 配图放大倍率：背景层按这个倍数放大再缓移，保证移动时不露黑边
+  motion_scale: 1.16
+  # ---- 品牌信息 ----
+  channel_name: "历史小故事"
+  intro_slogan: "一盏茶的时间，听一段旧事"
+  # ---- 片头 / 片尾画面 ----
+  intro: true
+  outro_card: true
+  # 转场：章节之间淡入淡出到黑（fade），同一个章节内的分镜硬切
+  transition: "fade"          # fade | none
+  transition_seconds: 0.4
+  # 编码参数
+  video_codec: "libx264"
+  preset: "medium"
+  crf: 20
+  # 音轨编码。播放器放不出声音时，多半是系统缺 AAC 解码器，
+  # 按 aac → libmp3lame → ac3 顺序换。
+  audio_codec: "aac"
+  audio_sample_rate: 48000
+  audio_bitrate: "192k"
+  # 无图时的兜底背景色
+  fallback_bg: "0x101820"
+
+# ---------- 8. 字幕 ----------
+subtitle:
+  enabled: true
+  font_name: "Microsoft YaHei"
+  font_size_portrait: 52
+  font_size_landscape: 46
+  max_chars_per_line: 18
+  max_lines: 2
+  primary_color: "&H00FFFFFF"
+  outline_color: "&H00000000"
+  outline: 3
+  shadow: 1
+  # 字幕垂直位置（0=顶部,1=底部）。必须和 media.build_layers 的 subtitle_zone 对齐
+  margin_v_ratio: 0.88
+  bottom_bar: true
+  bottom_bar_opacity: 0.45
+
+# ---------- 9. 背景音乐 ----------
+# 版权说明：只用免版权可商用的曲子（如 Mixkit Free Music）。
+#          不要用有版权的影视/节目配乐 —— 公开发布有侵权风险。
+bgm:
+  enabled: false            # 默认关（本项目需求没提 BGM，想要就置 true）
+  file: "data/bgm/story_bed.mp3"
+  volume: 0.08
+  start_mode: "after_intro"  # immediate | after_intro | custom
+  start_at: 0.0
+  start_padding: 0.4
+  fade_in: 2.5
+  fade_out: 4.0
+  loop: true
+
+# ---------- 10. 路径 ----------
+paths:
+  data_dir: "data"
+  material_dir: "data/material"   # 检索素材
+  image_dir: "data/images"        # 配图
+  audio_dir: "data/audio"         # 语音
+  slide_dir: "data/slides"        # 合成画面
+  segment_dir: "data/segments"    # 分镜片段
+  output_dir: "data/output"       # 成片
+  temp_dir: "data/tmp"
+
+# ---------- 11. 运行时 ----------
+runtime:
+  keep_intermediate: true
+  log_level: "INFO"
+  # 跑完在控制台打印时长统计的明细表
+  print_timeline: true
+  # ---- 生成记录 / 选题去重 ----
+  # 每次跑完追加一条记录到 data/history.json（人看的是同目录 生成记录.md），
+  # 并据此查重：
+  #   · 不带 -t 自动选题时，跳过已经做过的题材（池子挑完了就让模型出一个新题）
+  #   · 带 -t 指定了做过的题材 —— 直接拦下并提示，除非加 --allow-duplicate
+  record_history: true

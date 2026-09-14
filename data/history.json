@@ -1,0 +1,326 @@
+[
+  {
+    "run_id": "20260911112353",
+    "generated_at": "2026-09-11T11:23:53",
+    "topic": "鸿门宴上，项羽为什么没杀刘邦",
+    "title": "鸿门一宴，项羽为何放走刘邦？",
+    "period": "秦朝灭亡后，公元前206年",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 1697,
+    "speech_seconds": 406.7,
+    "speech_minutes": 6.78,
+    "video_seconds": {
+      "portrait": 447.14,
+      "landscape": 447.14
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {},
+    "material": {
+      "topic": "鸿门宴上，项羽为什么没杀刘邦",
+      "queries": [
+        {
+          "query": "鸿门宴上，项羽为什么没杀刘邦",
+          "hits": 8
+        }
+      ],
+      "items": 8,
+      "provider": "bing"
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_鸿门一宴，项羽为何放走刘邦？_竖屏.mp4",
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_鸿门一宴，项羽为何放走刘邦？_横屏.mp4"
+    ],
+    "script": "",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\archive\\20260911_首次跑批\\20260911_鸿门一宴，项羽为何放走刘邦？_metadata.json",
+    "elapsed_seconds": 0.0,
+    "backfilled": true,
+    "text_model": "",
+    "tts": ""
+  },
+  {
+    "run_id": "20260911114614",
+    "generated_at": "2026-09-11T11:46:14",
+    "topic": "虎门销烟：禁烟背后的账本",
+    "title": "白银、鸦片与钦差：虎门销烟前的三本账",
+    "period": "清朝道光十九年，公元1839年",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 1827,
+    "speech_seconds": 442.0,
+    "speech_minutes": 7.37,
+    "video_seconds": {
+      "portrait": 489.51,
+      "landscape": 489.51
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {},
+    "material": {
+      "topic": "虎门销烟：禁烟背后的账本",
+      "queries": [
+        {
+          "query": "虎门销烟：禁烟背后的账本",
+          "hits": 8
+        }
+      ],
+      "items": 8,
+      "provider": "bing"
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_白银、鸦片与钦差：虎门销烟前的三本账_竖屏.mp4",
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_白银、鸦片与钦差：虎门销烟前的三本账_横屏.mp4"
+    ],
+    "script": "",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_白银、鸦片与钦差：虎门销烟前的三本账_metadata.json",
+    "elapsed_seconds": 0.0,
+    "backfilled": true,
+    "text_model": "",
+    "tts": ""
+  },
+  {
+    "run_id": "20260911-121437",
+    "generated_at": "2026-09-11T12:14:37",
+    "topic": "城破那一天：城里的官员、商人、僧人、工匠各自的结局",
+    "title": "城破那天：官员、商人、僧人、工匠谁先被清算？",
+    "angle_question": "古代城破之后，城里不同身份的人——官员、商人、僧人、工匠——分别会遭遇什么？",
+    "angle_mode": "small",
+    "period": "明朝末年，公元17世纪前半叶",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2339,
+    "speech_seconds": 499.7,
+    "speech_minutes": 8.33,
+    "video_seconds": {
+      "portrait": 548.56
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {
+      "rule_fail": 0,
+      "rule_warn": 0,
+      "audit_issues": 3,
+      "regenerated_chapters": [
+        3,
+        4,
+        6
+      ],
+      "fact_audit": {
+        "total": 18,
+        "ok": 11,
+        "unsure": 7,
+        "wrong": 0
+      },
+      "images_found": 18,
+      "images_total": 18
+    },
+    "material": {
+      "topic": "城破那一天：城里的官员、商人、僧人、工匠各自的结局",
+      "queries": [],
+      "items": 8,
+      "provider": "bing",
+      "cached": true
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_城破那天：官员、商人、僧人、工匠谁先被清算？_竖屏.mp4"
+    ],
+    "script": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_城破那天：官员、商人、僧人、工匠谁先被清算？_脚本.md",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_城破那天：官员、商人、僧人、工匠谁先被清算？_metadata.json",
+    "elapsed_seconds": 477.0,
+    "text_model": "deepseek/deepseek-chat",
+    "tts": "minimax/audiobook_male_1"
+  },
+  {
+    "run_id": "20260911-130807",
+    "generated_at": "2026-09-11T13:08:07",
+    "topic": "普通人的后事：一口棺材、一块地要花多少钱？",
+    "title": "一口棺材一块地：明清普通人办丧事要花多少钱？",
+    "angle_question": "明清时期，一个没有官职、没有田产的普通人，从棺材到入土，家里到底要花掉多少银子？",
+    "angle_mode": "small",
+    "period": "明朝万历年间到清朝道光年间，公元16世纪末到19世纪前半叶",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2120,
+    "speech_seconds": 446.4,
+    "speech_minutes": 7.44,
+    "video_seconds": {
+      "portrait": 490.78
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {
+      "rule_fail": 0,
+      "rule_warn": 0,
+      "audit_issues": 4,
+      "regenerated_chapters": [
+        1,
+        4
+      ],
+      "fact_audit": {
+        "total": 18,
+        "ok": 15,
+        "unsure": 3,
+        "wrong": 0
+      },
+      "recheck_fail": 0,
+      "recheck_warn": 6,
+      "images_found": 18,
+      "images_total": 18
+    },
+    "material": {
+      "topic": "普通人的后事：一口棺材、一块地要花多少钱？",
+      "queries": [
+        {
+          "query": "普通人的后事：一口棺材、一块地要花多少钱？",
+          "hits": 8
+        }
+      ],
+      "items": 8,
+      "provider": "bing"
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_一口棺材一块地：明清普通人办丧事要花多少钱？_竖屏.mp4"
+    ],
+    "script": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_一口棺材一块地：明清普通人办丧事要花多少钱？_脚本.md",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_一口棺材一块地：明清普通人办丧事要花多少钱？_metadata.json",
+    "elapsed_seconds": 512.6,
+    "text_model": "deepseek/deepseek-chat",
+    "tts": "minimax/audiobook_male_1"
+  },
+  {
+    "run_id": "20260911-133101",
+    "generated_at": "2026-09-11T13:31:01",
+    "topic": "娶一个媳妇要多少钱：聘礼和嫁妆压垮过多少人家？",
+    "title": "娶一个媳妇要多少钱：聘礼嫁妆真能压垮人家吗？",
+    "angle_question": "在清代，一个普通人家娶媳妇，聘礼和嫁妆到底要花掉多少钱、占家庭年收入多少？",
+    "angle_mode": "small",
+    "period": "清朝乾隆至道光年间，公元18世纪中后期至19世纪前半叶",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2220,
+    "speech_seconds": 482.7,
+    "speech_minutes": 8.04,
+    "video_seconds": {
+      "portrait": 527.91
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {
+      "rule_fail": 0,
+      "rule_warn": 0,
+      "audit_issues": 8,
+      "regenerated_chapters": [
+        2,
+        3,
+        5,
+        6
+      ],
+      "fact_audit": {
+        "total": 18,
+        "ok": 13,
+        "unsure": 5,
+        "wrong": 0
+      },
+      "recheck_fail": 3,
+      "recheck_warn": 1,
+      "images_found": 18,
+      "images_total": 18
+    },
+    "material": {
+      "topic": "娶一个媳妇要多少钱：聘礼和嫁妆压垮过多少人家？",
+      "queries": [
+        {
+          "query": "娶一个媳妇要多少钱：聘礼和嫁妆压垮过多少人家？",
+          "hits": 8
+        }
+      ],
+      "items": 8,
+      "provider": "bing"
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_娶一个媳妇要多少钱：聘礼嫁妆真能压垮人家吗？_竖屏.mp4"
+    ],
+    "script": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_娶一个媳妇要多少钱：聘礼嫁妆真能压垮人家吗？_脚本.md",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_娶一个媳妇要多少钱：聘礼嫁妆真能压垮人家吗？_metadata.json",
+    "elapsed_seconds": 1078.6,
+    "text_model": "deepseek/deepseek-chat",
+    "tts": "minimax/audiobook_male_1"
+  },
+  {
+    "run_id": "20260911-133857",
+    "generated_at": "2026-09-11T13:38:57",
+    "topic": "一顿饭多少钱：不同身份的人一天吃什么？",
+    "title": "一顿饭多少钱：古代打工人的三餐到底怎么吃？",
+    "angle_question": "在清朝道光年间，一个普通佃农、一个衙门差役、一个县官，各自一天花多少钱、吃什么东西？",
+    "angle_mode": "small",
+    "period": "清朝道光年间，公元19世纪前半叶",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2254,
+    "speech_seconds": 470.9,
+    "speech_minutes": 7.85,
+    "video_seconds": {
+      "portrait": 512.24
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {
+      "rule_fail": 0,
+      "rule_warn": 0,
+      "audit_issues": 3,
+      "regenerated_chapters": [
+        3,
+        4,
+        5
+      ],
+      "fact_audit": {
+        "total": 18,
+        "ok": 11,
+        "unsure": 7,
+        "wrong": 0
+      },
+      "recheck_fail": 1,
+      "recheck_warn": 2,
+      "images_found": 18,
+      "images_total": 18
+    },
+    "material": {
+      "topic": "一顿饭多少钱：不同身份的人一天吃什么？",
+      "queries": [
+        {
+          "query": "一顿饭多少钱：不同身份的人一天吃什么？",
+          "hits": 8
+        }
+      ],
+      "items": 8,
+      "provider": "bing"
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_一顿饭多少钱：古代打工人的三餐到底怎么吃？_竖屏.mp4"
+    ],
+    "script": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_一顿饭多少钱：古代打工人的三餐到底怎么吃？_脚本.md",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260911_一顿饭多少钱：古代打工人的三餐到底怎么吃？_metadata.json",
+    "elapsed_seconds": 475.2,
+    "text_model": "deepseek/deepseek-chat",
+    "tts": "minimax/audiobook_male_1"
+  }
+]
