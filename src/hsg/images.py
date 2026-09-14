@@ -808,6 +808,102 @@ def _try_batch(
     return None, "", "", attempts, n
 
 
+# ---------------------------------------------------------------- AI 生成配图
+# 为什么需要：图库路线的天花板已实测到顶（见 config 注释）——克利夫兰索引对具体题材
+# 几乎是空的（"Qing dynasty copper coins" 只 1 条、"…porridge relief" 0 条），
+# 只有「时代+泛画种」宽词能命中，于是「要找清代铜钱」被配成明代斗彩婴戏杯。
+# 生成图没有这个限制（提示词就是分镜内容），而且没有第三方版权。
+_GEN_SUFFIX_DEFAULT = ("中国工笔风俗画风格，绢本设色，色调灰暗克制，"
+                       "画面中不要出现任何文字、书法、题字、落款、印章、署名、水印")
+
+
+def build_generate_prompt(prompt: str, cfg: Config) -> str:
+    """拼生成提示词：分镜的检索词 + 风格/禁文字后缀（截到接口上限 1500 字符）。"""
+    style = str(cfg.images.get("generate_style_suffix") or _GEN_SUFFIX_DEFAULT)
+    p = (prompt or "").strip().rstrip("。")
+    s = style.strip().rstrip("。")
+    full = f"{p}。{s}" if p and s else (p or s)
+    return full[:1500]
+
+
+def generate_scene_image(scene_index: int, prompt: str, cfg: Config,
+                         cache_dir: Path) -> tuple[Path | None, str, str, dict]:
+    """用 MiniMax image-01 生成一张配图。返回 (路径, 出处标注, 来源名, 记录)。
+
+    实测（2026-09）：
+      · 出图约 24-27 秒/张（9:16 与 16:9 各测一次）
+      · 提示词里写「无文字」模型仍会加伪书法题字与红印章 —— 所以
+        ① 后缀里反复强调，② 生成后用 scripts/review_images.py 复核，
+        复核发现带字就直接 reject 重生成（那时会带上「不要文字」的期望词）。
+    """
+    im = cfg.images
+    if not bool(im.get("generate", False)):
+        return None, "", "", {}
+    key = env_get("MINIMAX_API_KEY")
+    if not key:
+        log.warning("images.generate 开着但取不到 MINIMAX_API_KEY，跳过生成")
+        return None, "", "", {}
+
+    import httpx
+
+    base = str(cfg.tts.minimax.base_url).rstrip("/")
+    full = build_generate_prompt(prompt, cfg)
+    payload = {
+        "model": str(im.get("generate_model") or "image-01"),
+        "prompt": full[:1500],
+        "aspect_ratio": str(im.get("generate_aspect") or "3:4"),
+        "response_format": "url",
+        "n": 1,
+        "prompt_optimizer": True,
+        "aigc_watermark": bool(im.get("generate_aigc_watermark", False)),
+    }
+    rec: dict = {"generator": payload["model"], "prompt": full,
+                 "aspect": payload["aspect_ratio"]}
+    t0 = time.monotonic()
+    try:
+        with httpx.Client(timeout=float(im.get("generate_timeout", 300)),
+                          follow_redirects=True) as c:
+            r = c.post(f"{base}/image_generation",
+                       headers={"Authorization": f"Bearer {key}",
+                                "Content-Type": "application/json"}, json=payload)
+            data = r.json()
+        code = ((data.get("base_resp") or {}).get("status_code"))
+        if code not in (0, None):
+            log.warning("分镜 %d 生成配图失败：status_code=%s %s（退回图库检索）",
+                        scene_index, code, (data.get("base_resp") or {}).get("status_msg"))
+            rec["error"] = f"{code} {(data.get('base_resp') or {}).get('status_msg')}"
+            return None, "", "", rec
+        d = data.get("data") or {}
+        url = (d.get("image_urls") or [None])[0]
+        raw = cache_dir / f"_gen_{scene_index:03d}.png"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        with httpx.Client(timeout=300.0, follow_redirects=True) as c:
+            if url:
+                got = c.get(url, headers={"User-Agent": _UA})
+                got.raise_for_status()
+                raw.write_bytes(got.content)
+            elif d.get("image_base64"):
+                import base64
+                raw.write_bytes(base64.b64decode(d["image_base64"][0]))
+            else:
+                log.warning("分镜 %d 生成接口没返回图片数据（退回图库检索）", scene_index)
+                return None, "", "", rec
+        final = cache_dir / f"scene_{scene_index:03d}.jpg"
+        _prepare(raw, final)
+        raw.unlink(missing_ok=True)
+        spent = time.monotonic() - t0
+        rec.update({"picked": str(url or "base64"), "file": final.name,
+                    "download_seconds": round(spent, 1),
+                    "license": "AI 生成（无第三方版权）"})
+        log.info("分镜 %d 配图：%s（生成／%s／%.1fs）", scene_index, final.name,
+                 payload["model"], spent)
+        return (final, f"AI 生成（{payload['model']}）", "minimax-gen", rec)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("分镜 %d 生成配图异常（退回图库检索）：%s", scene_index, exc)
+        rec["error"] = str(exc)
+        return None, "", "", rec
+
+
 def fetch_for_scene(
     scene_index: int,
     queries: list[str],
@@ -831,13 +927,23 @@ def fetch_for_scene(
     qs = [q for q in (queries or []) if q][:max_q] or ["中国古代 文物"]
     qs_en = [q for q in (queries_en or []) if q][:max_q]
 
+    # ---- 生成优先（若开启）：生成图不受图库索引限制，也没有第三方版权。
+    # 失败（额度/限流/接口异常）就静默退回下面的图库检索，不会因此没图。
+    all_attempts: list[dict] = []
+    if bool(im.get("generate", False)):
+        p, label, src, rec = generate_scene_image(scene_index, qs[0], cfg, cache_dir)
+        if rec:
+            all_attempts.append({**rec, "round": "generate"})
+        if p:
+            return p, label, src, all_attempts
+        log.info("分镜 %d 生成未成功，退回图库检索", scene_index)
+
     batches: list[tuple[list[str], list[str]]] = [(qs, qs_en)]
     fb_zh = [str(q) for q in (im.get("fallback_queries") or [])][:max_q]
     fb_en = [str(q) for q in (im.get("fallback_queries_en") or [])][:max_q]
     if fb_zh or fb_en:
         batches.append((fb_zh, fb_en))
 
-    all_attempts: list[dict] = []
     n = 0
     for bi, (b_zh, b_en) in enumerate(batches):
         if bi and not (b_zh or b_en):

@@ -688,6 +688,33 @@ def test_scene_query_translation() -> None:
           images.translate_scene_queries([(1, "Qing dynasty painting")], cfg, _Fake({})), {})
 
 
+def test_generate_image_prompt() -> None:
+    """AI 生成配图的提示词拼装与开关守卫（不联网）。"""
+    print("\n[生成配图 images.build_generate_prompt / generate_scene_image]")
+    from hsg import images
+
+    cfg = load_config()
+    p = images.build_generate_prompt("清代 铜钱 串钱 道光通宝 实物", cfg)
+    check_true("提示词含分镜检索词", "道光通宝" in p)
+    check_true("提示词含禁文字后缀", "不要出现任何文字" in p or "无文字" in p)
+    check_true("提示词不超过接口上限 1500", len(p) <= 1500)
+
+    cfg.images["generate_style_suffix"] = "只画器物，不要人"
+    check_true("自定义风格后缀生效",
+               images.build_generate_prompt("清代 铜钱", cfg) == "清代 铜钱。只画器物，不要人")
+    check("空提示词时只用后缀", images.build_generate_prompt("", cfg), "只画器物，不要人")
+    check("句尾多余句号被吃掉",
+          images.build_generate_prompt("清代 铜钱。", cfg), "清代 铜钱。只画器物，不要人")
+    cfg.images["generate_style_suffix"] = "A" * 2000
+    check("超长时截断到 1500", len(images.build_generate_prompt("x", cfg)), 1500)
+
+    # 开关关闭 / 缺 key → 直接返回空，且不发起请求
+    cfg2 = load_config()
+    cfg2.images["generate"] = False
+    check("开关关闭时不生成",
+          images.generate_scene_image(1, "清代 铜钱", cfg2, ROOT / "data/tmp"), (None, "", "", {}))
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -711,6 +738,7 @@ def main() -> int:
     test_tts_speed_plumbing()
     test_cover()
     test_scene_query_translation()
+    test_generate_image_prompt()
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     for f in FAIL:
