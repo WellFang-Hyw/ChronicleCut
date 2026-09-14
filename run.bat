@@ -28,9 +28,10 @@ set PYTHONUTF8=1
 if exist ".venv\Scripts\python.exe" (
   set "PY=.venv\Scripts\python.exe"
 ) else (
-  echo [!] 没找到 .venv，用系统 python。首次使用请先执行：
+  echo [!] 没找到 .venv。首次使用请先执行：
   echo     python -m venv .venv
-  echo     .venv\Scripts\python.exe -m pip install -r requirements.txt
+  echo     .venv\Scripts\python.exe -m pip install -e .
+  echo ^(依赖清单在 pyproject.toml；免费兜底语音要额外装：pip install edge-tts^)
   set "PY=python"
 )
 

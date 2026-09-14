@@ -40,10 +40,10 @@ story:
   # 每个「分镜」的目标时长（秒）。一个分镜 = 一张图 + 一段字幕 + 一段语音
   # 分镜越短画面切换越快，20-25 秒是比较耐看的节奏
   seconds_per_scene: 22
-  # 片头 / 片尾
+  # 片头口播（片尾画面的开关在 video.outro）
   intro_speak: true
   intro_seconds_pad: 1.2
-  outro: true
+  # 片尾卡片：时长 + 文案
   outro_seconds: 4.0
   outro_title: "本期故事讲完了，我们下期再见"
   # 章节标题是否需要 LLM 起（关掉则用「第一章」这种机械编号）
@@ -90,7 +90,6 @@ llm:
 
 # ---------- 4. 史实校验 ----------
 verify:
-  enabled: true
   # 程序化：年份是否落在故事所处的年代区间内（超出的会被点名）
   year_range_check: true
   # 程序化：同一个人名在全文里的写法是否一致
@@ -115,7 +114,6 @@ verify:
   #   block_on_fail: true         → 直接中止（退出码 3），不出片
   # 建议：自己看的片子用 false（不完全阻断）；要发布的用 true。
   block_on_fail: false
-  max_retries: 1
 
 # ---------- 5. 语音合成（TTS）----------
 tts:
@@ -160,8 +158,9 @@ tts:
     speed: 1.0
   timeout: 180
   concurrency: 4
-  # 合成粒度：scene（按分镜合成，画面切换点天然对齐语音停顿）| chapter
-  granularity: "scene"
+  # 合成粒度固定按分镜（scene）：一段文字 = 一段语音 = 一张图 = 一片字幕，
+  # 画面切换点天然落在语音停顿上。
+  # （曾有个 granularity 开关只写在配置里、代码从未实现，已移除。）
 
 # ---------- 6. 配图 ----------
 images:
@@ -187,7 +186,6 @@ images:
   # 想换/加源：改这一行即可；配了 key 之后把名字加进来就会生效。
   # 建议先跑 `run.bat probe-images --download` 量一遍真实下载速度再决定。
   providers: ["cleveland", "pexels", "unsplash"]
-  per_scene: 1              # 每个分镜用几张图（>1 会平均分配该分镜时长）
   # 每个分镜最多试几个检索词（LLM 会给 1-3 个）
   max_queries_per_scene: 3
   # 每路检索取多少候选
@@ -199,13 +197,10 @@ images:
   fallback_queries: ["明代 古画", "中国古代 风俗画", "古代 生活场景 古画"]
   fallback_queries_en: ["Ming dynasty painting", "Chinese genre painting figures",
                         "Chinese album painting landscape"]
-  # ---- 「古画/文物向」优先 ----
-  # 历史题材里，一幅古画或一件文物比景区照片合适得多。
-  # 除了模型给的检索词，再补一路「检索词 + 后缀」的检索，这一路的结果优先用。
-  # 注意：只对 bing（中文检索）生效 —— 博物馆接口是英文索引，
-  # 英文检索词由大纲阶段直接产出（image_queries_en）。
-  # 如果这一路一张都用不了，会自动退回普通检索结果（不会因此没图）。
-  art_query_suffixes: ["古画", "文物", "博物馆 藏品"]
+  # ---- 「美术作品向」优先 ----
+  # 历史题材里一幅古画/文物比景区照片合适得多。这个偏好由代码里的 _ART_MARKERS
+  # 与下面的 prefer_page_keywords 一起实现。
+  # （早先还有一路「检索词 + 后缀（古画/文物）」的补充检索，已废弃并移除配置。）
   # 落在这些站点上的结果降权（旅游/素材/壁纸站，以及 AI 生成图库 ——
   # 实跑搜「函谷关遗址」拿到过带电线杆的现代景区照；
   # 搜「明代城墙」拿到过昵图网的 AI 生成图，画面上还印着 AIGC 水印）。
@@ -260,8 +255,7 @@ images:
   # 公共领域与免费商用图库都不强制署名，打开后版权链路更清楚
   show_credit: false
   # 图源可用性会写入 data/images/_sources.json，方便排查
-  # 兜底：完全找不到图时用生成的渐变底图（不会留空画面）
-  allow_fallback_bg: true
+  # （找不到图时自动用生成的渐变底图兜底，不留空画面；没有开关，也不该有）
 
 # ---------- 7. 视频输出 ----------
 video:
@@ -280,8 +274,11 @@ video:
   channel_name: "历史小故事"
   intro_slogan: "一盏茶的时间，听一段旧事"
   # ---- 片头 / 片尾画面 ----
+  # ⚠️ 代码读的键名是 intro / outro（pipeline.render_orientation 里的 v.get("intro") /
+  #    v.get("outro")）。原先进位是「outro_card」，那个名字代码从来不读 —— 是个假开关，
+  #    所以关不掉片尾。已改为下面这个真正生效的键名。
   intro: true
-  outro_card: true
+  outro: true
   # 转场：章节之间淡入淡出到黑（fade），同一个章节内的分镜硬切
   transition: "fade"          # fade | none
   transition_seconds: 0.4
@@ -312,7 +309,7 @@ subtitle:
   # 字幕垂直位置（0=顶部,1=底部）。必须和 media.build_layers 的 subtitle_zone 对齐
   margin_v_ratio: 0.88
   bottom_bar: true
-  bottom_bar_opacity: 0.45
+  # （压暗条透明度写在 subtitles.build_ass 的 &H73 前缀里，约 45%，没有独立开关）
 
 # ---------- 9. 背景音乐 ----------
 # 版权说明：只用免版权可商用的曲子（如 Mixkit Free Music）。
@@ -341,8 +338,9 @@ paths:
 
 # ---------- 11. 运行时 ----------
 runtime:
-  keep_intermediate: true
   log_level: "INFO"
+  # 中间产物（画面/音频/片段）一律保留：用户要求保留调试脚本和旧产物，不做自动清理。
+  # （曾有个 keep_intermediate 开关，代码从未读它 —— 已移除。）
   # 跑完在控制台打印时长统计的明细表
   print_timeline: true
   # ---- 生成记录 / 选题去重 ----

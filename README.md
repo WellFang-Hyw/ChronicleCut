@@ -9,8 +9,11 @@
       → ffmpeg 编码分镜 → 拼接 → 横屏 / 竖屏两版成片
 ```
 
-一句话概括技术选择：**文本用 DeepSeek，语音用 MiniMax，画面用 Pillow 离线合成，
+一句话概括技术选择：**文本用 DeepSeek，语音用 MiniMax（克隆音色），画面用 Pillow 离线合成，
 ffmpeg 只做编码和拼接**。
+
+> 🤖 让 AI agent 在本项目干活前，先读 **`AGENTS.md`** —— 那里写了硬性约定
+> （文本模型锁、配音固定用哪个音色和语速、改代码的护栏、已知机制局限）。
 
 ---
 
@@ -44,7 +47,9 @@ run.bat plan -t "安史之乱"                          :: 只写稿（几毛钱
 
 ```
 historical_story_gen/
+├── AGENTS.md              给 AI agent 的项目约定（硬性约定/护栏/已知局限）← 先读这个
 ├── config.yaml            所有可调参数（时长、音色、图源、字幕、编码…）
+├── README.md / 命令速查.md 说明与命令表
 ├── run.bat / run.py       入口
 ├── src/hsg/
 │   ├── config.py          配置加载 + 密钥三路兜底 + 文本模型锁
@@ -65,10 +70,13 @@ historical_story_gen/
 │   └── cli.py             命令行
 ├── scripts/
 │   ├── smoke_video.py     零 LLM 的媒体链路冒烟测试 ← 媒体出问题先跑它
-│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重，108 项）
+│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导，126 项）
 │   ├── probe_clean_images.py  零成本配图专项探测（clean 策略下的命中率/版权/年代）
 │   ├── rerender.py        从已有 metadata 重渲染（复用文稿和语音，只换配图/画面）
-│   └── check_layout.py    量一帧里标题带和字幕带是否重叠（不靠肉眼）
+│   ├── check_layout.py    量一帧里标题带和字幕带是否重叠（不靠肉眼）
+│   ├── clone_voice.py     用参考音频克隆音色（MiniMax voice_clone → 可复用的 voice_id）
+│   ├── tts_preview.py     多音色 A/B 试听（同一篇稿子各出一条 mp3，不跑 LLM/配图/渲染）
+│   └── audit_config.py    配置审计（找出代码从不读的假开关 / 配置里没写的键）
 └── data/                  产物（见「产物位置」）
 ```
 
@@ -197,7 +205,8 @@ markdown 残留、清洗后仍出现的「百科/维基/百度」等来源词、
 
 没配 key 的图源会自动跳过，不影响运行 —— 缺 key 不会让流程没图可用。
 
-**实测（2026-09，国内网络直连）**：无 key 且能用的公共领域源只有上面三家博物馆。
+**实测（2026-09，国内网络直连）**：无 key 且**真的下得动**的公共领域源，目前只剩
+`cleveland` 一家（met 的图服务器只有 20 KB/s，artic 的图床一律 403 —— 搜得到但下不动）。
 Openverse 连接超时、美国国会图书馆被 Cloudflare 拦（403）、Wikimedia Commons 不可达、
 Rijksmuseum 旧 demo key 已失效。所以要扩充图源，最实际的是去领 Unsplash / Pexels
 的免费 key（注册即得），填进环境变量即可，代码不用改。
@@ -272,9 +281,11 @@ Pillow 出**两层**图，运动交给 ffmpeg：
 
 ---
 
-## 4. 文本模型锁定（硬性）
+## 4. 模型选择（硬性）
 
-**文本内容只用 DeepSeek，MiniMax 只用于 TTS。** 三层固化，不是靠注释：
+### 4.1 文本：只用 DeepSeek
+
+**文本内容只用 DeepSeek，MiniMax 只用于 TTS 与音色克隆。** 三层固化，不是靠注释：
 
 | 层 | 机制 | 拦掉什么 |
 |---|---|---|
@@ -291,6 +302,25 @@ Pillow 出**两层**图，运动交给 ffmpeg：
 
 要换文本模型：同时改 `src/hsg/config.py` 的 `TEXT_PROVIDER_LOCK` 和
 `config.yaml` 的 `llm.provider`，两处必须一致。
+
+### 4.2 语音：固定用克隆音色，语速 1.1
+
+```yaml
+tts:
+  minimax:
+    voice_id: "hsg_story_v2"   # 克隆音色
+    speed: 1.1
+```
+
+- `hsg_story_v2` 由 `data/base_voice/api-response_2.mp3`（15.87s 参考音频）经
+  MiniMax `voice_clone` 克隆而来，挂在账号下可长期复用。
+- 克隆/换音频：`python scripts\clone_voice.py --check` 先验门槛，再
+  `--voice-id <新id>`；工具会打印该往 config 里填什么。
+- **换音色或改语速后必须重跑 `run.bat probe-tts`**，用实测值覆盖
+  `story.chars_per_second`（当前 4.11 是旧音色 audiobook_male_1 的值，对新音色不成立）。
+  详见 §6。
+- 想看两个音色的差别：`python scripts\tts_preview.py --script <脚本.md>
+  --voice hsg_story_v2 --voice audiobook_male_1 --announce`。
 
 ---
 
@@ -313,10 +343,11 @@ Python 读到的是空字符串），所以读取顺序是：
 
 - **时长靠章节数而不是靠"目标时长"**。`story.target_total_seconds` 只用来算比例
   和打日志；真正决定内容量的是 `story.chapters` 和 `seconds_per_chapter`。
-- **语速换算必须实测**。当前 `chars_per_second: 4.77` 是
-  `audiobook_male_1` + `speed=1.1` 实测值（1.0 速是 4.11；免费 edge 的
-  `zh-CN-YunxiNeural` 1.0 速是 4.75，两者接近）。换音色或改语速后
-  跑 `run.bat probe-tts` 重新校准，否则初始估算会偏，多花一轮改写+TTS。
+- **语速换算必须实测，而且必须跟上音色**。当前 `chars_per_second: 4.11` 是
+  **旧音色** `audiobook_male_1` + `speed=1.0` 的实测值，对现在的克隆音色
+  `hsg_story_v2` + `speed=1.1` **不成立**（克隆音色偏慢），必须重跑
+  `run.bat probe-tts` 用实测值覆盖，否则初始估算会偏、多花一轮改写+TTS。
+  参考：edge 的 `zh-CN-YunxiNeural` 实测 4.75 字/秒@1.0、5.22@1.1。
 - **素材摘要质量一般**（Bing 摘要会混进游戏站、诗文站）。它的定位只是锚点，
   事实准确性最终靠审校层。
 - **配图版权**：默认 `license_policy: clean`，只用 CC0/公共领域/免费商用图库
@@ -333,7 +364,7 @@ Python 读到的是空字符串），所以读取顺序是：
 
 ---
 
-## 9. 生成记录与选题去重（不重复讲做过的故事）
+## 7. 生成记录与选题去重（不重复讲做过的故事）
 
 每次跑完自动追加一条记录：
 
@@ -396,7 +427,7 @@ ERROR  这个题材已经做过了：鸿门一宴，项羽为何放走刘邦？�
 
 ---
 
-## 10. 产物位置
+## 8. 产物位置
 
 ```
 data/output/20260911_<标题>_横屏.mp4        成片
@@ -414,7 +445,7 @@ data/segments/<朝向>/                       分镜片段 + _concat_*.mp4（拼
 
 ---
 
-## 8. 排查顺序（媒体出问题不要先怀疑流水线）
+## 9. 排查顺序（媒体出问题不要先怀疑流水线）
 
 ```bat
 run.bat smoke          :: 零 LLM 跑通 配图→画面→字幕→编码→拼接

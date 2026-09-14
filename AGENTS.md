@@ -91,6 +91,7 @@ run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
 python scripts\tts_preview.py --script <脚本.md> --voice A --voice B
+python scripts\audit_config.py            :: 配置审计（动了 config.yaml 之后跑一下）
 python scripts\rerender.py                :: 复用文稿+语音，只重做配图/画面
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
