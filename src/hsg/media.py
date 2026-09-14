@@ -217,6 +217,44 @@ def build_layers(
     return bg_out, fg_out
 
 
+_CLAUSE_SPLIT = re.compile(r"(?<=[，。、；：！？,.;:!?])")
+
+
+def _wrap_by_clause(text: str, font: ImageFont.FreeTypeFont, max_width: int,
+                    max_lines: int = 0) -> list[str]:
+    """按标点优先断行（先把小句切出来，再贪心填行）。
+
+    为什么不能只用 _wrap_cjk：中文没有词边界，纯按宽度硬折会把词拆到两行 ——
+    视觉复核在流水线产出的封面上抓到过「县官」被拆成「县/官」。
+    先按标点切成小句、再填行，断点就落在标点上，不会断词。
+    单个小句本身就超宽时（中间没有标点的长句），退回硬折，这是没办法的事。
+    """
+    s = (text or "").strip()
+    if not s:
+        return []
+    lines: list[str] = []
+    cur = ""
+    for cl in [c for c in _CLAUSE_SPLIT.split(s) if c]:
+        if font.getlength(cl) > max_width:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            lines.extend(_wrap_cjk(cl, font, max_width))
+            continue
+        if font.getlength(cur + cl) <= max_width:
+            cur += cl
+        else:
+            if cur:
+                lines.append(cur)
+            cur = cl
+    if cur:
+        lines.append(cur)
+    if max_lines and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1][:-1] + "…"
+    return lines
+
+
 def cover_title_layout(title: str) -> str:
     """封面标题的折行布局：在第一个冒号后插一个换行。
 
@@ -318,10 +356,10 @@ def build_cover(
     end_y = _draw_block(draw, lines, f, tw // 2, ty, fill=(255, 255, 255),
                         outline_w=4, line_gap=14)
 
-    # 标题下：副标题（本期问题/年代）
+    # 标题下：副标题（本期问题/年代）—— 用标点优先断行，别把词拆到两行
     if subtitle:
         f2 = _font(int(min(tw * 0.034, th * 0.021)))
-        sub = _wrap_cjk(subtitle, f2, tw - 2 * margin_x)[:3]
+        sub = _wrap_by_clause(subtitle, f2, tw - 2 * margin_x, max_lines=3)
         _draw_block(draw, sub, f2, tw // 2, end_y + int(th * 0.030),
                     fill=(226, 231, 240), outline_w=2, line_gap=8)
 

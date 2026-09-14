@@ -603,6 +603,17 @@ def test_cover() -> None:
           "鸿门一宴，项羽为何放走刘邦？")
     check("空标题不炸", media.cover_title_layout(""), "")
 
+    # 副标题断行：视觉复核抓到「县官」被拆成「县/官」，这里把它钉住
+    f = media._font(40)
+    sub_text = ("在清朝道光年间，一个普通佃农、一个衙门差役、一个县官，"
+                "各自一天花多少钱、吃什么东西？")
+    lines = media._wrap_by_clause(sub_text, f, 1180, max_lines=4)
+    check_true("按句断行不丢字（拼回去等于原文）",
+               "".join(lines) == sub_text, f"→ {lines}")
+    check_true("「县官」不会被拆到两行", any("县官" in ln for ln in lines), f"→ {lines}")
+    check_true("没有一行以逗号/顿号开头",
+               not any(ln and ln[0] in "，、。；" for ln in lines), f"→ {lines}")
+
     cfg = load_config()
     tmp = ROOT / "data/tmp"
     tmp.mkdir(parents=True, exist_ok=True)
