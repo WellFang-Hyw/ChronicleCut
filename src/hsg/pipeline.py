@@ -331,16 +331,23 @@ def run(
         scenes = [s for s in story.all_scenes if s.duration > 0]
         period = ((story.period_start, story.period_end)
                   if story.period_start and story.period_end else None)
+        # 场景级英文检索词：一次便宜的 LLM 调用，把每个分镜的中文检索词翻成博物馆索引
+        # 能命中的英文词。不这么做的话中文词只发给 bing、clean 策略下 bing 不参与，
+        # 场景词完全空转，配图会退化成「章节级英文词 → 兜底泛词」（实测 18/18 如此）。
+        scene_en = images_mod.translate_scene_queries(
+            [(s.index, s.image_query) for s in scenes], cfg, llm)
 
         def _grab(s) -> None:
             queries = [s.image_query]
             queries_en: list[str] = []
+            if scene_en.get(s.index):
+                queries_en.append(scene_en[s.index])
             ch = story.chapters[s.chapter_index - 1] if 0 < s.chapter_index <= len(story.chapters) else None
             if ch:
                 for q in ch.image_queries:
                     if q and q not in queries:
                         queries.append(q)
-                queries_en = [q for q in ch.image_queries_en if q]
+                queries_en += [q for q in ch.image_queries_en if q and q not in queries_en]
             p, credit, src, attempts = images_mod.fetch_for_scene(
                 s.index, queries, cfg, cache_dir, used,
                 queries_en=queries_en, period=period)

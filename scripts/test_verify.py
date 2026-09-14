@@ -639,6 +639,55 @@ def test_cover() -> None:
     src.unlink(missing_ok=True)
 
 
+def test_scene_query_translation() -> None:
+    """场景级英文检索词：解析、清洗、退回逻辑。"""
+    print("\n[翻译 images.translate_scene_queries / _en_ok]")
+    from hsg import images
+
+    check_true("英文词通过校验", images._en_ok("Qing dynasty copper coins"))
+    check_true("带引号的也通过（会清洗）", images._en_ok('"Ming dynasty painting"'))
+    check_true("含汉字被挡掉", not images._en_ok("清代铜钱"))
+    check_true("太短被挡掉", not images._en_ok("coins"))
+    check_true("太长被挡掉", not images._en_ok("a b c d e f g h i j"))
+    check_true("空的被挡掉", not images._en_ok(""))
+
+    class _Fake:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def chat_json(self, *_a, **_kw):
+            return self.payload
+
+    cfg = load_config()
+    rows = [(1, "清代 铜钱 串钱 道光通宝 实物"), (2, "清代 粥厂 施粥 古画"),
+            (3, "清代 县衙差役 站班图 古画")]
+    out = images.translate_scene_queries(rows, cfg, _Fake({"queries": [
+        {"index": 1, "en": "Qing dynasty copper coins"},
+        {"index": 2, "en": "清代铜钱"},            # 含汉字 → 丢
+        {"index": 3, "en": "a"},                   # 太短 → 丢
+        {"index": 9, "en": "Qing dynasty painting"},  # 不在输入里 → 丢
+    ]}))
+    check("只保留合法的、且必须在输入范围内", out, {1: "Qing dynasty copper coins"})
+
+    # 关掉开关 → 一次调用都不发
+    cfg.images["translate_scene_queries"] = False
+    check("开关关掉后直接返回空（不调 LLM）", images.translate_scene_queries(rows, cfg, _Fake({})), {})
+    cfg.images["translate_scene_queries"] = True
+
+    # 没给 llm → 返回空，不炸
+    check("没给 llm 时返回空", images.translate_scene_queries(rows, cfg, None), {})
+
+    # LLM 抛异常 → 返回空（不阻断出片）
+    class _Boom:
+        def chat_json(self, *_a, **_kw):
+            raise RuntimeError("boom")
+
+    check("LLM 异常时静默退回", images.translate_scene_queries(rows, cfg, _Boom()), {})
+    # 全是英文的输入（没有汉字）→ 不需要翻译
+    check("输入里没有中文时不做翻译",
+          images.translate_scene_queries([(1, "Qing dynasty painting")], cfg, _Fake({})), {})
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -661,6 +710,7 @@ def main() -> int:
     test_renumber_and_feedback()
     test_tts_speed_plumbing()
     test_cover()
+    test_scene_query_translation()
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     for f in FAIL:

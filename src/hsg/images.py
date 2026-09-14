@@ -505,6 +505,85 @@ def active_providers(cfg: Config) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------- 场景级英文检索词
+# 为什么需要这一步：实测（2026-09，用当期 _sources.json 逐条核对）发现
+# **18/18 配图全部来自英文检索词，中文检索词 0 个起作用**，而选中的还是兜底泛词
+# 「Ming dynasty painting」——因为场景自己那一批候选数是 0。
+#
+# 机制原因：中文检索词只发给 bing（PROVIDERS[...]["zh"]=True），
+# 而 license_policy: clean 下 bing 不参与 → 每个分镜自己的中文检索词是**空转**的，
+# 配图完全由「章节级英文词 → 兜底泛词」决定，题材必然对不上
+# （实测分镜要「清代铜钱」，配的是明代斗彩婴戏杯）。
+#
+# 修法：写稿之后、配图之前，花一次便宜的 LLM 调用把每个分镜的中文检索词
+# 翻成博物馆索引能命中的英文词，让它真正到达 Cleveland。挂在 images.translate_scene_queries。
+_SCENE_QUERY_SYSTEM = """你把中文的配图检索词改写成**博物馆藏品库能命中的英文检索词**。
+
+藏品库（克利夫兰/大都会的开放接口）的索引是英文的，而且只认「时代 + 画种/器物」这种写法。
+所以你的输出要求：
+
+1. 结构是「时代 + 画种或器物」，例如：
+   · 清代 铜钱 串钱 → "Qing dynasty copper coins"
+   · 清代 农民 耕作 古画 → "Qing dynasty painting peasant farming"
+   · 清代 粥厂 施粥 古画 → "Chinese painting famine relief porridge"
+   · 明代 驿站 马匹 古画 → "Ming dynasty painting horse post station"
+2. 只要 3-6 个英文单词。**不要写句子**，不要写事件名（如「鸿门宴」），
+   不要写抽象词（history/china/ancient 单独用没用），不要引号。
+3. 宁可写「时代 + 泛画种」这种能命中的组合，也不要写馆里肯定没有的具体题材。
+   例：找不到「拷问刑具」就写 "Ming dynasty painting figures"。
+4. 纯 ASCII 英文，不要出现汉字或拼音。
+
+只输出 JSON：{"queries": [{"index": 分镜序号, "en": "英文检索词"}]}"""
+
+
+def _en_ok(s: str) -> bool:
+    """英文检索词的清洗与校验：必须基本是 ASCII、3-8 个词、不吃汉字。"""
+    t = re.sub(r"[\"'“”‘’]", "", (s or "").strip())
+    t = re.sub(r"\s+", " ", t).strip(" .,;:")
+    if not t or re.search(r"[\u4e00-\u9fa5]", t):
+        return False
+    words = t.split()
+    return 2 <= len(words) <= 8 and len(re.findall(r"[A-Za-z]", t)) >= 6
+
+
+def translate_scene_queries(scene_rows: list[tuple[int, str]], cfg: Config, llm) -> dict[int, str]:
+    """把 [(分镜序号, 中文检索词)] 翻成 {分镜序号: 英文检索词}。
+
+    只在配置开启且给了 llm 时执行；任何异常都返回已拿到的部分（不阻断出片）。
+    """
+    if not bool(cfg.images.get("translate_scene_queries", True)) or llm is None:
+        return {}
+    rows = [(i, q) for i, q in scene_rows if q and re.search(r"[\u4e00-\u9fa5]", q)]
+    if not rows:
+        return {}
+    listing = "\n".join(f"{i}. {q}" for i, q in rows)
+    try:
+        data = llm.chat_json(_SCENE_QUERY_SYSTEM,
+                            f"把下面每一条都改写成英文检索词：\n\n{listing}\n\n"
+                            f"【输出】只输出 JSON（index 就是上面的序号）：\n"
+                            f'{{"queries": [{{"index": 1, "en": "Qing dynasty painting"}}]}}',
+                            max_tokens=2000, temperature=0.2)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("场景检索词翻译失败（仍用章节级英文词）：%s", exc)
+        return {}
+
+    valid_idx = {i for i, _ in rows}
+    out: dict[int, str] = {}
+    for it in (data.get("queries") if isinstance(data, dict) else data) or []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            idx = int(it.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        en = str(it.get("en") or "")
+        if idx not in valid_idx or not _en_ok(en):
+            continue
+        out[idx] = re.sub(r"\s+", " ", en.strip().strip("\"'")).strip()
+    log.info("场景级英文检索词：%d/%d 个分镜拿到（其余退回章节级英文词）", len(out), len(rows))
+    return out
+
+
 # ---------------------------------------------------------------- 下载 & 去重
 def _avg_hash(path: Path) -> int:
     try:

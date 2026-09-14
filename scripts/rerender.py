@@ -172,16 +172,25 @@ def main() -> int:
         scenes = [s for s in story.all_scenes if s.duration > 0]
         period = ((story.period_start, story.period_end)
                   if story.period_start and story.period_end else None)
+        # 与 pipeline 一致：先把场景级中文检索词翻成英文，否则 clean 策略下场景词空转
+        from hsg.config import ApiKeys as _ApiKeys
+        from hsg.llm import LLM as _LLM
+
+        with _LLM(cfg, _ApiKeys.from_env()) as _llm:
+            scene_en = images_mod.translate_scene_queries(
+                [(s.index, s.image_query) for s in scenes], cfg, _llm)
 
         def _grab(s: Scene) -> None:
             queries = [s.image_query]
             queries_en: list[str] = []
+            if scene_en.get(s.index):
+                queries_en.append(scene_en[s.index])
             ch = story.chapters[s.chapter_index - 1] if 0 < s.chapter_index <= len(story.chapters) else None
             if ch:
                 for q in ch.image_queries:
                     if q and q not in queries:
                         queries.append(q)
-                queries_en = [q for q in ch.image_queries_en if q]
+                queries_en += [q for q in ch.image_queries_en if q and q not in queries_en]
             p, credit, src, attempts = images_mod.fetch_for_scene(
                 s.index, queries, cfg, cache_dir, used,
                 queries_en=queries_en, period=period)
