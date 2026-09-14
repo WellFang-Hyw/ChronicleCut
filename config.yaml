@@ -382,13 +382,27 @@ bgm:
   start_padding: 0.4
   fade_in: 2.5
   fade_out: 4.0
-  # 曲子只有 96 秒，成片 8-9 分钟 → 必须循环铺满（-stream_loop -1）
+  # 曲子只有 118 秒，成片 7-9 分钟 → 必须循环铺满（-stream_loop -1）
   loop: true
-  # ⚠️ 当前这首 33_Motivating_Mornings.mp3 是**运动/励志向**，
-  #    和历史题材的气质不合，现在是「接线验证用」。
-  #    换曲子只需替换 data/bgm/story_bed.mp3 这个文件，配置不用动。
-  #    建议方向：古琴/箫/筝类器乐、或低频氛围垫底（无鼓点、无人声）。
-  # 备注：复用自本机 tts_information_summary 项目已核过的 Mixkit 免版权曲。
+  # ---- 当前曲目（2026-09-14 换成舒缓向）----
+  #   Meditation ／ Arulo ／ Ambient ／ mixkit 免费音乐库
+  #   许可：Mixkit Stock Music Free License（可商用、免署名；不可转售素材本身）
+  #   时长 118.1s ／ 256kbps ／ 全曲 mean_volume -10.7 dB
+  #
+  #   选它的依据（12 首候选实测，脚本：data/tmp/pick_bgm.py + bgm_pulse.py）：
+  #     · 频谱质心 751Hz —— 12 首里最低（越低越闷、越柔）
+  #     · 高频段（>4kHz）比全带低 31.8 dB —— 几乎没有沙锤/镲片那种高频毛刺
+  #     · 峰-均差 9.8 dB —— 最小，意味着不会有突然的渐强把旁白压住
+  #     · 包络波动率 σ/μ = 0.178 —— 12 首里最平
+  #     · 脉冲 1 次/分 —— 几乎没有鼓点（对照：Music_Vastness 37 次/分）
+  #   ⚠️ 视觉模型在频谱图上把 Voxscape 判成「最干净」，数值一量它有 21 次/分脉冲。
+  #      这类判断以数值为准 —— 频谱图看形状可以，下结论不行。
+  #
+  # ---- 换曲子 ----
+  #   只需替换 data/bgm/story_bed.mp3 这个文件，配置不用动。
+  #   旧曲已归档：data/bgm/archive/story_bed_v1_Motivating_Mornings.mp3
+  #   （运动/励志向，与历史题材气质不合，当初只是「接线验证用」）
+  #   来源与许可留痕见 data/bgm/来源与许可.md
 
 # ---------- 10. 路径 ----------
 paths:
