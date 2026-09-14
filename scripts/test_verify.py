@@ -585,6 +585,49 @@ def test_tts_speed_plumbing() -> None:
                t.speed == cfg.tts["edge"].get("speed"))
 
 
+def test_cover() -> None:
+    """封面：折行断点、尺寸、以及「真的画上去了字」（不是一张空图）。"""
+    print("\n[封面 media.cover_title_layout / build_cover]")
+    from PIL import Image, ImageStat
+
+    from hsg import media
+
+    check("封面标题在冒号处断行（全角）",
+          media.cover_title_layout("一顿饭多少钱：古代打工人的三餐到底怎么吃？"),
+          "一顿饭多少钱：\n古代打工人的三餐到底怎么吃？")
+    check("半角冒号同样处理（顺带吃掉冒号后的空格）",
+          media.cover_title_layout("赤壁之战: 一场大火改写了三国"),
+          "赤壁之战:\n一场大火改写了三国")
+    check("没有冒号的标题不动它",
+          media.cover_title_layout("鸿门一宴，项羽为何放走刘邦？"),
+          "鸿门一宴，项羽为何放走刘邦？")
+    check("空标题不炸", media.cover_title_layout(""), "")
+
+    cfg = load_config()
+    tmp = ROOT / "data/tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    # 造一张纯色底图当配图，避免依赖已有的 scene_XXX.jpg
+    src = tmp / "cover_src.jpg"
+    Image.new("RGB", (1200, 1600), (60, 70, 90)).save(src, "JPEG", quality=88)
+
+    out = tmp / "cover_test.jpg"
+    p = media.build_cover(out, (1080, 1920), cfg, title="一顿饭多少钱：古代打工人的三餐到底怎么吃？",
+                          kicker=cfg.video.channel_name,
+                          subtitle="在清朝道光年间，一个普通佃农、一个衙门差役分别吃什么？",
+                          foot=str(cfg.video.get("intro_slogan") or ""), image_path=src)
+    with Image.open(p) as im:
+        check("封面尺寸与竖屏一致", im.size, (1080, 1920))
+        # 文字是白的/黄的 —— 画面里必须有足够多的亮像素，否则说明字没画上去
+        bright = sum(1 for px in im.convert("L").getdata() if px > 200)
+        stat = ImageStat.Stat(im.convert("L"))
+    check_true("封面画上了文字（亮像素数量合理）", 3000 < bright < 200000,
+               f"bright={bright}")
+    check_true("封面不是纯色空图（有明暗层次）", stat.stddev[0] > 20,
+               f"stddev={stat.stddev[0]:.1f}")
+    out.unlink(missing_ok=True)
+    src.unlink(missing_ok=True)
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -606,6 +649,7 @@ def main() -> int:
     test_client_and_tts_guards()
     test_renumber_and_feedback()
     test_tts_speed_plumbing()
+    test_cover()
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     for f in FAIL:

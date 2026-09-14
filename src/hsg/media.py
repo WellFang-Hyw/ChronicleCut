@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -214,6 +215,132 @@ def build_layers(
     fg_out.parent.mkdir(parents=True, exist_ok=True)
     fg.save(fg_out, "PNG", optimize=True)
     return bg_out, fg_out
+
+
+def cover_title_layout(title: str) -> str:
+    """封面标题的折行布局：在第一个冒号后插一个换行。
+
+    中文没有词边界，纯按宽度硬折会把「古代」拆成「古/代」、「到底」拆成「到/底」。
+    本项目的标题统一是「小切口：具体疑问」结构，所以在冒号处断一次，
+    再让 _wrap_cjk 按 \\n 分段各自折行，断点就落在短语边界上。
+    """
+    return re.sub(r"([：:])\s*", r"\1\n", title or "", count=1)
+
+
+def build_cover(
+    out_path: Path,
+    size: tuple[int, int],
+    cfg: Config,
+    *,
+    title: str,
+    kicker: str = "",
+    subtitle: str = "",
+    foot: str = "",
+    image_path: Path | None = None,
+) -> Path:
+    """生成封面图（单张 JPG，不是视频用的两层）。
+
+    为什么要它：发布到任何平台都要一张封面/缩略图，而截图截出来的是「画面 + 字幕」，
+    标题往往被字幕压住、也不够大。封面按平台习惯做成纯图：配图压暗当底，
+    标题大字居中，顶部栏目名，底部一句补充信息。
+
+    和分镜画面的区别：封面只有一张图（前景直接合成到背景上），不放字幕区，
+    所以标题可以放得更大、位置更居中 —— 缩略图尺寸下也要看得清。
+    """
+    tw, th = size
+    portrait = th >= tw
+    title_font_px = int(min(tw * (0.105 if portrait else 0.070), th * (0.055 if portrait else 0.105)))
+    margin_x = int(tw * 0.08)
+
+    # ---------------- 背景
+    bg_hex = str(cfg.video.get("fallback_bg", "0x101820")).replace("0x", "").replace("#", "")
+    try:
+        base_rgb = tuple(int(bg_hex[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        base_rgb = (16, 24, 32)
+    bg = None
+    if image_path and Path(image_path).exists():
+        try:
+            with Image.open(image_path) as src:
+                bg = _cover_crop(src.convert("RGB"), (tw, th))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("封面配图处理失败(%s)，用渐变底：%s", Path(image_path).name, exc)
+    if bg is None:
+        bg = _gradient((tw, th), base_rgb)
+    # 封面比画面压得更暗 —— 标题大、要压得住图
+    darken = float(cfg.video.get("cover_darken", 0.5))
+    if darken > 0:
+        bg = Image.blend(bg, Image.new("RGB", (tw, th), (0, 0, 0)), min(0.85, max(0.0, darken)))
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=0.8))
+    if bg.mode != "RGB":
+        bg = bg.convert("RGB")
+
+    # ---------------- 前景（直接合成到背景上，封面就一张图）
+    fg = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    fg.alpha_composite(_vertical_scrim((tw, th), 0.0, 0.42, 150, 0))
+    fg.alpha_composite(_vertical_scrim((tw, th), 0.55, 1.0, 0, 130))
+    draw = ImageDraw.Draw(fg)
+
+    # 顶部：栏目名
+    y = int(th * 0.075)
+    if kicker:
+        f = _font(int(min(tw * 0.040, th * 0.022)), bold=True)
+        lines = _wrap_cjk(kicker, f, tw - 2 * margin_x)[:1]
+        _draw_block(draw, lines, f, tw // 2, y, fill=(255, 219, 120), outline_w=2, line_gap=6)
+        y += (f.getmetrics()[0] + f.getmetrics()[1]) + int(th * 0.055)
+
+    # 中部：主标题（字号自适应，最多 3 行，不超出可用高度）
+    #
+    # 折行要避开「断在词中间」：中文没有词边界，纯按宽度硬折会把「古代」拆成
+    # 「古/代」、「到底」拆成「到/底」（视觉检查抓到过，很难看）。
+    # 本项目的标题统一是「小切口：具体疑问」结构，所以在冒号处优先断一次，
+    # _wrap_cjk 会按 \n 分段各自折行，两段各自贴边 → 断点自然落在短语边界上。
+    title_layout = cover_title_layout(title)
+    avail_h = int(th * (0.40 if portrait else 0.34))
+    base = title_font_px
+    f = _font(base, bold=True)
+    lines = [ln for ln in _wrap_cjk(title_layout, f, tw - 2 * margin_x) if ln.strip()]
+    while base > 30 and (
+        len(lines) > 3
+        or (f.getmetrics()[0] + f.getmetrics()[1] + 14) * len(lines) > avail_h
+    ):
+        base = int(base * 0.92)
+        f = _font(base, bold=True)
+        lines = [ln for ln in _wrap_cjk(title_layout, f, tw - 2 * margin_x) if ln.strip()]
+    if len(lines) > 3:
+        lines = lines[:3]
+        lines[-1] = lines[-1][:-1] + "…"
+    a, d = f.getmetrics()
+    block_h = (a + d + 14) * len(lines)
+    ty = y + max(0, (avail_h - block_h) // 2)
+    bar = Image.new("RGBA", (tw, block_h + 36), (0, 0, 0, 105))
+    fg.alpha_composite(bar, (0, max(0, ty - 18)))
+    end_y = _draw_block(draw, lines, f, tw // 2, ty, fill=(255, 255, 255),
+                        outline_w=4, line_gap=14)
+
+    # 标题下：副标题（本期问题/年代）
+    if subtitle:
+        f2 = _font(int(min(tw * 0.034, th * 0.021)))
+        sub = _wrap_cjk(subtitle, f2, tw - 2 * margin_x)[:3]
+        _draw_block(draw, sub, f2, tw // 2, end_y + int(th * 0.030),
+                    fill=(226, 231, 240), outline_w=2, line_gap=8)
+
+    # 底部：补充信息（如 slogan）。
+    # 位置放在 0.885h 左右而不是贴底 —— 竖版平台（抖音/视频号）底部约 15% 会被
+    # 账号信息与按钮盖住，贴底的那行字等于白写。
+    if foot:
+        f3 = _font(int(min(tw * 0.026, th * 0.016)), bold=True)
+        lines3 = _wrap_cjk(foot, f3, tw - 2 * margin_x)[:1]
+        a3, d3 = f3.getmetrics()
+        _draw_block(draw, lines3, f3, tw // 2, th - int(th * 0.115) - a3 - d3,
+                    fill=(255, 214, 82), outline_w=2, line_gap=6)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.alpha_composite(bg.convert("RGBA"), fg).convert("RGB").save(
+        out_path, "JPEG", quality=93)
+    log.info("封面：%s（%dx%d，%s）", out_path.name, tw, th,
+             "竖版" if portrait else "横版")
+    return out_path
 
 
 def build_text_card(

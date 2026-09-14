@@ -32,7 +32,8 @@ from hsg.models import Chapter, Scene, Story  # noqa: E402
 from hsg.pipeline import render_orientation    # noqa: E402
 
 
-def load_story(meta_path: Path, cfg, audio_dir: Path, log) -> Story:
+def load_story(meta_path: Path, cfg, audio_dir: Path, log) -> tuple[Story, dict]:
+    """返回 (Story, metadata 原始字典)。第二个返回值给调用方看当初的 tts 设定。"""
     data = json.loads(meta_path.read_text(encoding="utf-8"))
     sub = cfg.tts[str(cfg.tts.provider)]
     voice = str(sub.get("voice_id") or "")
@@ -74,12 +75,15 @@ def load_story(meta_path: Path, cfg, audio_dir: Path, log) -> Story:
     )
     missing = [s.index for s in story.all_scenes if s.audio_path is None]
     if missing:
-        log.warning("有 %d 个分镜找不到语音缓存（%s…）——多半是语速/音色跟当初不一致。"
-                    "用 --speed 指定当初那个语速再试；这些分镜会被跳过。",
-                    len(missing), missing[:5])
+        log.warning("有 %d 个分镜找不到语音缓存（%s…）", len(missing), missing[:5])
+        log.warning("  音频缓存 key = 文本 + **音色** + **语速**，所以重渲染必须跟当初一致：")
+        log.warning("  当前按 音色=%s 语速=%s 找；找不到就用 --voice / --speed 指定当初的值。",
+                    voice, speed)
+        log.warning("  查某期当初用的音色：看 metadata 里的 tts 字段，"
+                    "或看生成记录 data\\生成记录.md 的「模型」行。")
     log.info("从 metadata 载入：《%s》%d 章 / %d 个分镜 / 语音 %.2f 分钟（音色 %s 语速 %s）",
              story.title, len(chapters), len(story.all_scenes), story.duration / 60, voice, speed)
-    return story
+    return story, data
 
 
 def main() -> int:
@@ -90,7 +94,9 @@ def main() -> int:
     ap.add_argument("--no-images", action="store_true", help="沿用已有配图，不重新找图")
     ap.add_argument("--images", action="store_true", help="强制重新找图（默认行为）")
     ap.add_argument("--no-bgm", action="store_true")
-    ap.add_argument("--speed", type=float, help="必须与当初生成时一致（音频缓存按语速命名）")
+    ap.add_argument("--speed", type=float, help="必须与当初生成时一致（音频缓存 key 含语速）")
+    ap.add_argument("--voice", help="必须与当初生成时一致（音频缓存 key 含音色）"
+                                   "；不改 config 也能重渲染旧期")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -103,21 +109,57 @@ def main() -> int:
     cfg = load_config()
     ensure_dirs(cfg)
     if args.speed:
-        # 音频缓存按「文本+音色+语速」命名，重渲染必须用当初那个语速，否则找不到语音
+        # 音频缓存按「文本+音色+语速」命名，重渲染必须用当初那套设定，否则找不到语音
         cfg.tts[str(cfg.tts.provider)]["speed"] = float(args.speed)
+    if args.voice:
+        # 换过音色之后，旧期必须用 --voice 指回当初的音色；否则 18/18 全 miss
+        cfg.tts[str(cfg.tts.provider)]["voice_id"] = str(args.voice)
     if args.no_bgm:
         cfg.bgm["enabled"] = False
 
     out_dir = cfg.paths.get_path("output_dir")
-    meta = Path(args.metadata) if args.metadata else max(
-        out_dir.glob("*_metadata.json"), key=lambda p: p.stat().st_mtime, default=None)
+    if args.metadata:
+        meta = Path(args.metadata)
+    else:
+        # 默认挑最新的 metadata，但要跳过「只写稿、没出语音」的 plan 产物 ——
+        # 那种 metadata 里根本没有语音记录，重渲染必然 0 命中（踩过）。
+        cands = sorted(out_dir.glob("*_metadata.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        usable: list[Path] = []
+        plan_only: list[Path] = []
+        for p in cands:
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            (plan_only if d.get("plan_only") else usable).append(p)
+        meta = usable[0] if usable else None
+        if usable and plan_only:
+            log.info("自动跳过了 %d 个 plan 产物（只写稿、没有语音记录，无法重渲染）",
+                     len(plan_only))
+        if not usable:
+            log.error("data/output 下找不到可重渲染的 metadata"
+                      "（%d 个 plan 产物只有稿件，没有语音）。", len(plan_only))
+            log.error("  先跑一期完整流程（run.bat），或用 --metadata 指定具体的 metadata.json")
+            return 1
     if not meta or not meta.exists():
         log.error("找不到 metadata.json，先在 data/output/ 下放一个或用 --metadata 指定")
         return 1
     log.info("metadata：%s", meta)
 
     audio_dir = cfg.paths.get_path("audio_dir")
-    story = load_story(meta, cfg, audio_dir, log)
+    story, raw = load_story(meta, cfg, audio_dir, log)
+    # 一个分镜都没语音时别往下走：渲染出来是一部只有片头片尾的空片，
+    # 看起来「跑成功了」，实际上什么都没做 —— 这种失败最难查。
+    if not any(s.audio_path for s in story.all_scenes):
+        log.error("一个分镜的语音都没找到 —— 继续渲染只会得到一部空片，已中止。")
+        log.error("  音频缓存 key = 文本 + 音色 + 语速，必须跟当初完全一致。")
+        log.error("  这期 metadata 里记的设定：%s",
+                  raw.get("tts_spec") or raw.get("tts")
+                  or "（未记录 —— 2026-09-14 之前的产物都没记，看 生成记录.md 的「模型」行）")
+        log.error("  例：python scripts\\rerender.py --voice audiobook_male_1 "
+                  "--speed 1.1 -o portrait")
+        return 1
     video.check_ffmpeg()
 
     # ---- 配图
@@ -173,12 +215,14 @@ def main() -> int:
     orients = list(cfg.video.orientations.keys()) if args.orientation == "both" else [args.orientation]
     stamp = ""
     for orient in orients:
-        final = render_orientation(story, cfg, orient)
+        final, cover = render_orientation(story, cfg, orient)
         st = video.probe_streams(final)
         log.info("[%s] 成片：%s（%.1fs = %.2f 分钟，%sx%s，音轨 %s）",
                  orient, final, st.get("duration", 0), st.get("duration", 0) / 60,
                  (st.get("video") or {}).get("width"), (st.get("video") or {}).get("height"),
                  (st.get("audio") or {}).get("codec") or "无")
+        if cover:
+            log.info("[%s] 封面：%s", orient, cover)
         stamp = final.name
     log.info("完成。文件名沿用日期前缀：%s", stamp)
     return 0

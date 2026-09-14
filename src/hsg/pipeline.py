@@ -370,11 +370,14 @@ def run(
 
     # ---------- 10. 成片
     outputs: list[str] = []
+    covers: list[str] = []
     video_seconds: dict[str, float] = {}
     if do_video:
         for orient in orientations:
-            out = render_orientation(story, cfg, orient)
+            out, cover = render_orientation(story, cfg, orient)
             outputs.append(str(out))
+            if cover:
+                covers.append(str(cover))
             video_seconds[orient] = round(video.media_duration(out), 2)
 
     # ---------- 11. 产物
@@ -384,12 +387,26 @@ def run(
     stats["regenerated_chapters"] = sorted(regenerated)
     stats["images_found"] = sum(1 for s in story.all_scenes if s.image_path)
     stats["images_total"] = len(story.all_scenes)
+    # 把「这期是用什么音色/语速生成的」写进 metadata。
+    # 为什么必须有：音频缓存 key 含音色与语速，rerender 旧期时必须知道当初的设置，
+    # 否则 0 命中、渲染出空片（实测踩过 —— 换音色后旧期全废，而 metadata 里查不到依据）。
+    tts_sub = cfg.tts[str(cfg.tts.provider)]
+    tts_spec = {
+        "provider": str(cfg.tts.provider),
+        "voice_id": str(tts_sub.get("voice_id") or ""),
+        "speed": tts_sub.get("speed"),
+        "chars_per_second": float(cfg.story.get("chars_per_second") or 0),
+    }
+    llm_sub = cfg.llm[str(cfg.llm.provider)]
     script_md = write_script(story, cfg, out_dir / f"{stem}_脚本.md", total)
     meta_json = write_metadata(story, cfg, out_dir / f"{stem}_metadata.json", rows, {
         "topic": topic, "material": mat_meta, "total_seconds": total,
         "ok_scenes": ok, "outputs": outputs, "video_seconds": video_seconds,
         "verify": stats, "elapsed_seconds": round(time.time() - started, 1),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "tts_spec": tts_spec,
+        "text_model": f"{cfg.llm.provider}/{llm_sub.get('model')}",
+        "covers": covers,
     })
 
     # ---------- 12. 生成记录（用于查重 + 留档）
@@ -410,16 +427,20 @@ def run(
     log.info("完成：%.2f 分钟 / %d 章 / %d 个分镜", total / 60, len(story.chapters), len(story.all_scenes))
     for o in outputs:
         log.info("成片：%s", o)
+    for c in covers:
+        log.info("封面：%s", c)
     log.info("稿件：%s", script_md)
     log.info("元数据：%s", meta_json)
     return {"story": story, "total_seconds": total, "outputs": outputs,
+            "covers": covers,
             "script": str(script_md), "metadata": str(meta_json),
             "video_seconds": video_seconds, "verify": stats,
             "elapsed_seconds": round(time.time() - started, 1)}
 
 
 # ---------------------------------------------------------------- 渲染
-def render_orientation(story: Story, cfg: Config, orient: str) -> Path:
+def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Path | None]:
+    """渲染一个朝向：返回 (成片路径, 封面路径或 None)。"""
     v = cfg.video
     size = (int(v.orientations[orient].width), int(v.orientations[orient].height))
     seg_root = cfg.paths.get_path("segment_dir") / orient
@@ -523,7 +544,20 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> Path:
     if final.resolve() != final_src.resolve():
         import shutil
         shutil.copyfile(final_src, final)
-    return final
+
+    # ---- 封面（发布用缩略图）。默认开；要关：video.cover: false
+    cover: Path | None = None
+    if bool(v.get("cover", True)):
+        cover = media.build_cover(
+            out_dir / f"{stamp}_{safe_filename(story.title)}_{label}_封面.jpg",
+            size, cfg,
+            title=story.title,
+            kicker=channel,
+            subtitle=story.angle_question or story.period,
+            foot=str(v.get("intro_slogan") or ""),
+            image_path=next((s.image_path for s in scenes if s.image_path), None),
+        )
+    return final, cover
 
 
 def _tts_cached(cfg: Config, workdir: Path, name: str, text: str):

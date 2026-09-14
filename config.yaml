@@ -293,6 +293,13 @@ video:
   audio_bitrate: "192k"
   # 无图时的兜底背景色
   fallback_bg: "0x101820"
+  # ---- 封面图（发布用缩略图）----
+  # 每个朝向各出一张 <日期>_<标题>_<竖屏/横屏>_封面.jpg，和成片同目录。
+  # 组成：第一张分镜配图压暗当底 + 栏目名（顶部）+ 大标题（中部，字号自适应）
+  #       + 本期问题/年代（标题下）+ slogan（底部）。
+  cover: true
+  # 封面底图压暗程度（0-0.85）。封面标题比画面上的字大，要压得更暗才压得住图
+  cover_darken: 0.5
 
 # ---------- 8. 字幕 ----------
 subtitle:
@@ -315,15 +322,24 @@ subtitle:
 # 版权说明：只用免版权可商用的曲子（如 Mixkit Free Music）。
 #          不要用有版权的影视/节目配乐 —— 公开发布有侵权风险。
 bgm:
-  enabled: false            # 默认关（本项目需求没提 BGM，想要就置 true）
+  enabled: true             # 2026-09-14 打开
   file: "data/bgm/story_bed.mp3"
+  # 音量：0.08 偏低是刻意的 —— 这是垫底背景音，人声必须始终清楚
   volume: 0.08
+  # after_intro = 开场白念完（含片头口播）才淡入，不要在开头就铺。
+  # 这是用户明确要求过的：片子一上来就铺音乐会盖住开场那几句。
   start_mode: "after_intro"  # immediate | after_intro | custom
   start_at: 0.0
   start_padding: 0.4
   fade_in: 2.5
   fade_out: 4.0
+  # 曲子只有 96 秒，成片 8-9 分钟 → 必须循环铺满（-stream_loop -1）
   loop: true
+  # ⚠️ 当前这首 33_Motivating_Mornings.mp3 是**运动/励志向**，
+  #    和历史题材的气质不合，现在是「接线验证用」。
+  #    换曲子只需替换 data/bgm/story_bed.mp3 这个文件，配置不用动。
+  #    建议方向：古琴/箫/筝类器乐、或低频氛围垫底（无鼓点、无人声）。
+  # 备注：复用自本机 tts_information_summary 项目已核过的 Mixkit 免版权曲。
 
 # ---------- 10. 路径 ----------
 paths:
