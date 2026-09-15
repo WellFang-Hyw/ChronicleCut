@@ -56,6 +56,11 @@ class Chapter:
 @dataclass
 class Story:
     topic: str
+    # 选题是两级的：类型（高层描述，决定「写哪一路故事」）+ 详细标题与描述。
+    # 类型也用来让选题避开连着做同一类，所以必须落到产物里（metadata/生成记录）。
+    topic_type: str = ""            # L1 故事类型
+    topic_type_desc: str = ""       # L1 的高层描述
+    topic_desc: str = ""            # L2 与故事相关性最高的描述
     title: str = ""
     angle_question: str = ""       # 本期要回答的那个具体问题（小切口模式）
     hook: str = ""                 # 开篇钩子（片头口播用）
