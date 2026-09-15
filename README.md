@@ -686,6 +686,18 @@ python scripts\check_layout.py frame.png
 > 为什么：commit message 是要在 `git log` 里一眼扫过去的，塞进十几行说明没人读；
 > 而这些「为什么这么改」的信息对后面维护的人（包括 AI）很值钱，放这里才找得到。
 
+### 2026-09-15 · 回归测试在内存紧张的机器上也能跑了（`normalize_clip` 支持 preset）
+- 现象：全量测试在 `test_clip_normalize` 崩掉，报 `x264 [error]: malloc of size 7088704 failed`
+  —— x264 连 7MB 都分配不到。查下来是**机器内存吃紧**（14GB 总量只剩 1.4GB 可用：
+  VS Code ×4 + opencode ×2 + chrome + Defender），跟代码无关（这条测试当天已通过十几次）。
+- 修的姿势不是「跳过测试」，而是让它不那么吃内存：`clips.normalize_clip` 增加可选
+  `preset`（留空 = x264 默认 medium，**生产行为一点没变**），测试用 `ultrafast`；
+  `scripts/import_clip.py` 也暴露 `--preset`（批量导入提速，这些中间产物后面还要重编码一次，
+  这里省下的质量没有意义）。
+- 断言的东西一点没少（分辨率/帧率/去音轨/截断时长都与 preset 无关）。
+- 顺带说明：这种失败**先怀疑环境再怀疑代码** —— 判据是「隔离跑同一条测试也失败」
+  且「代码路径当天没改动」。测试 385 项全过。
+
 ### 2026-09-15 · 可以自己制定选题了：`scripts/add_topic.py` + 用户选题池
 - 原来选题池是 `topics.py` 里的常量 —— **要加一条得改代码**，而「栏目做什么题」是你的判断，
   不该需要改代码才能表达。
