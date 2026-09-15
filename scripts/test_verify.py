@@ -781,6 +781,175 @@ def test_clip_normalize() -> None:
         f.unlink(missing_ok=True)
 
 
+def test_needs() -> None:
+    """素材需求清单：槽位切分、三级时长来源、优先级、覆盖度、工作单。"""
+    print("\n[需求清单 needs.plan_slots / build_needs / coverage]")
+    import json as _json
+    import tempfile
+
+    from hsg import clips, needs
+
+    cfg = load_config()
+
+    # ---- 槽位命名
+    check("槽位名", needs.slot_name(4, 2), "s04_sh2")
+    check("槽位名补零到两位（>9 也不乱）", needs.slot_name(12, 1), "s12_sh1")
+
+    # ---- 切分：上限取 min(clips.max_seconds, needs.slot_seconds)
+    check("短分镜不切", needs.plan_slots(6.0, cfg), [6.0])
+    check("0 秒不切（没时长的分镜不进清单）", needs.plan_slots(0.0, cfg), [])
+    s22 = needs.plan_slots(22.0, cfg)
+    check("22 秒切 3 段", len(s22), 3)
+    check_true("每段不超过目标节奏 8.5s", all(x <= 8.5 + 1e-9 for x in s22), f"→ {s22}")
+    check_true("每段不超过合规单段上限 10s", all(x <= float(cfg.clips.max_seconds) for x in s22),
+               f"→ {s22}")
+    check_true("切完总长不变（不会凭空长出/少了秒数）",
+               abs(sum(s22) - 22.0) < 1e-6, f"→ {sum(s22)}")
+    s30 = needs.plan_slots(30.0, cfg)
+    check_true("30 秒切 4 段且每段 ≥ 下限",
+               len(s30) == 4 and all(x >= float(cfg.needs.min_shot_seconds) for x in s30),
+               f"→ {s30}")
+    check_true("极短分镜退化成 1 段而不是 0 段",
+               len(needs.plan_slots(0.5, cfg)) == 1, f"→ {needs.plan_slots(0.5, cfg)}")
+
+    # ---- 三级时长来源：实测 > metadata 记录 > 按字数估
+    story = Story(
+        topic="三国", title="曹操为什么杀吕伯奢", period="东汉末",
+        chapters=[
+            Chapter(index=1, heading="逃亡路上", scenes=[
+                Scene(index=1, text="字" * 47, chapter_index=1, is_chapter_start=True,
+                      image_query="曹操 逃亡"),
+                Scene(index=2, text="字" * 100, chapter_index=1)]),
+            Chapter(index=2, heading="那一句话", scenes=[
+                Scene(index=3, text="字" * 100, chapter_index=2, is_chapter_start=True),
+                # 31.9 秒的长分镜，但**不是**章节开场 → 不该进「必须」
+                Scene(index=4, text="字" * 150, chapter_index=2)]),
+        ])
+    cps = float(cfg.story.chars_per_second)
+    durs, src = needs.scene_durations(story, cfg, recorded={})
+    check("没有实测也没有记录 → 按字数估", durs[1], round(47 / cps, 2))
+    check("估算计数", src["estimated"], 4)
+    cfg_alt = load_config()
+    cfg_alt.story["chars_per_second"] = 5.0
+    d5, _ = needs.scene_durations(story, cfg_alt, recorded={})
+    check("换算值真的读配置（改了配置结果跟着变，不是写死的）", d5[1], round(47 / 5.0, 2))
+    durs, src = needs.scene_durations(story, cfg, recorded={1: 12.5})
+    check("metadata 的实测记录优先于估算", durs[1], 12.5)
+    check("记录计数", src["metadata"], 1)
+    story.chapters[0].scenes[0].duration = 9.9
+    durs, src = needs.scene_durations(story, cfg, recorded={1: 12.5})
+    check("音频文件探到的真值优先于记录", durs[1], 9.9)
+    check("实测计数", src["audio"], 1)
+    story.chapters[0].scenes[0].duration = 0.0
+
+    # ---- 清单本体
+    nn = needs.build_needs(story, cfg, None, recorded={1: 20.0})
+    rows = nn["slots"]
+    check("清单版本号", nn["version"], needs.NEEDS_VERSION)
+    check("分镜 1（20.0s）切 3 个槽位", len([r for r in rows if r["scene"] == 1]), 3)
+    check("槽位时长之和 = 分镜时长",
+          round(sum(r["dur"] for r in rows if r["scene"] == 1), 2), 20.0)
+    check("每个分镜的段数被回填", sorted({r["shots_in_scene"] for r in rows}), [3, 4])
+    check("must 只落在每场的第 1 段",
+          sorted({r["shot"] for r in rows if r["priority"] == "must"}), [1])
+    check("章节开场是 must，其余是 nice",
+          [r["priority"] for r in rows if r["scene"] == 1], ["must", "nice", "nice"])
+    check("第 2 段起一律是复用（素材粒度=分镜）",
+          sorted({r["fallback"] for r in rows if r["shot"] > 1}), ["reuse"])
+    check("非关键场次的第 1 段回退到静态配图",
+          [r["fallback"] for r in rows if r["scene"] == 2 and r["shot"] == 1], ["still"])
+    # ★ 优先级与回退必须解耦：长分镜只改回退，不改优先级
+    check("长分镜不进「必须」（否则每一场都是必须，优先级失效）",
+          [r["priority"] for r in rows if r["scene"] == 4 and r["shot"] == 1], ["nice"])
+    check("长分镜的第 1 段回退到 AI 生成（静态图撑不住）",
+          [r["fallback"] for r in rows if r["scene"] == 4 and r["shot"] == 1], ["generate"])
+    check("章节开场仍然是 must（优先级只认这一条）",
+          sorted({r["scene"] for r in rows if r["priority"] == "must"}), [1, 3])
+    check("关键位置的回退是 AI 生成",
+          [r["fallback"] for r in rows if r["priority"] == "must"], ["generate", "generate"])
+    check("规则兜底用配图的检索词当需求描述",
+          [r["need"] for r in rows if r["scene"] == 1 and r["shot"] == 1], ["曹操 逃亡"])
+    check("题材/年代带上（供导入时打标签用）",
+          (rows[0]["topic"], rows[0]["era"]), (["三国"], "东汉末"))
+
+    # ---- 覆盖度
+    empty = needs.coverage(nn, clips.empty_index())
+    check("空素材库：缺口 = 总槽位 − 复用槽位",
+          len(empty["missing"]) + len(empty["reuse"]), len(rows))
+    check("空素材库：真缺的槽位（每场 1 段 × 4 场）", len(empty["missing"]), 4)
+    check("空素材库：复用槽位不算缺口", len(empty["reuse"]), 9)
+    check("空素材库：关键位置的缺口", len(empty["missing_must"]), 2)
+    check_true("真要剪的秒数低于总秒数", empty["fresh_seconds"] < empty["need_seconds"],
+               f"→ {empty['fresh_seconds']} vs {empty['need_seconds']}")
+
+    idx = clips.empty_index()
+    clips.add_clip(idx, {"id": "sg_01", "file": "a.mp4", "title": "三国演义",
+                         "people": ["曹操"], "era": "东汉末", "dur": 8.0,
+                         "slots": ["s01_sh1"]})
+    cov = needs.coverage(nn, idx)
+    check("绑了槽位 → 已绑定", cov["bound"], ["s01_sh1"])
+    check("同年代的其他槽位 → 有候选可复用", len(cov["suggested"]), len(rows) - 1)
+    check("有候选就不算缺口", cov["missing"], [])
+    check("素材库现有秒数被算出来", cov["have_seconds"], 8.0)
+
+    # ---- LLM 补全（打桩，不花钱）
+    class _FakeLLM:
+        def __init__(self, payload=None, boom=False):
+            self.payload, self.boom = payload, boom
+            self.calls = 0
+
+        def chat_json(self, system, user):
+            self.calls += 1
+            if self.boom:
+                raise RuntimeError("模拟 LLM 挂了")
+            return self.payload
+
+    fake = _FakeLLM({"scenes": [{"index": 1, "need": "曹操策马夜行，中景，月光",
+                                 "people": "曹操,陈宫", "callout": "亡命"}]})
+    nn2 = needs.build_needs(story, cfg, fake, recorded={1: 20.0})
+    r1 = [r for r in nn2["slots"] if r["scene"] == 1][0]
+    check("LLM 补的镜头描述", r1["need"], "曹操策马夜行，中景，月光")
+    check("人物字符串被切成列表", r1["people"], ["曹操", "陈宫"])
+    check("标注词", r1["callout"], "亡命")
+    check("一次调用覆盖全部分镜（不是每个分镜一次）", fake.calls, 1)
+    check("没被覆盖到的分镜保留规则值",
+          [r["need"] for r in nn2["slots"] if r["scene"] == 2][0], "字" * 34)
+
+    boom = _FakeLLM(boom=True)
+    nn3 = needs.build_needs(story, cfg, boom, recorded={1: 20.0})
+    check("LLM 挂了要退回规则值，不能阻断出清单",
+          [r["need"] for r in nn3["slots"] if r["scene"] == 1][0], "曹操 逃亡")
+    nn4 = needs.build_needs(
+        story, cfg, _FakeLLM({"scenes": [{"index": 1, "callout": "一二三四五六七"}]}),
+        recorded={1: 20.0})
+    check("过长/过短的标注词被丢掉（画面打不下）",
+          [r["callout"] for r in nn4["slots"] if r["scene"] == 1][0], "")
+
+    # ---- 工作单
+    md = needs.to_markdown(nn2, cfg, clips.empty_index())
+    check_true("工作单里有槽位名（导入时要照着抄）", "`s01_sh1`" in md, "")
+    check_true("工作单里有导入命令", "import_clip.py" in md, "")
+    check_true("工作单说明了哪些槽位不用单独剪", "复用本场素材" in md, "")
+    check_true("工作单里带上了建议标注词", "亡命" in md, "")
+    check_true("工作单里说清了单段规格（无音轨）", "无音轨" in md, "")
+    check_true("工作单按分镜分组", "### 分镜 1" in md, "")
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg2 = load_config()
+        cfg2.paths["data_dir"] = td
+        md_p, js_p = needs.save(nn2, cfg2, clips.empty_index())
+        check_true("save 同时写 md（给人）和 json（给机器）",
+                   md_p.exists() and js_p.exists(), f"→ {md_p}")
+        back = _json.loads(js_p.read_text(encoding="utf-8"))
+        check("json 能原样读回（渲染装配要用）", len(back["slots"]), len(nn2["slots"]))
+        check_true("文件名带题材", "三国" in md_p.name, f"→ {md_p.name}")
+        bad = dict(nn2)
+        bad["topic"] = 'a/b:c*d?e"f'
+        md_bad, _ = needs.save(bad, cfg2, clips.empty_index())
+        check_true("文件名里的非法字符被清掉（Windows 会炸）",
+                   not any(c in md_bad.name for c in '/\\:*?"<>|'), f"→ {md_bad.name}")
+
+
 def test_playlist_bgm() -> None:
     """按章节交替 BGM：区间换算、降级路径、有声区间判定。
 
@@ -1025,6 +1194,7 @@ def main() -> int:
     test_cover()
     test_clip_index()
     test_clip_normalize()
+    test_needs()
     test_playlist_bgm()
     test_scene_kinds()
     test_scene_query_translation()

@@ -63,6 +63,8 @@ historical_story_gen/
 │   ├── verify.py          史实校验（规则层 + LLM 审校 + 锚点核查 + 复检闸门）
 │   ├── tts.py             MiniMax T2A（+ edge-tts 兜底）
 │   ├── images.py          配图：版权安全图库优先（Cleveland CC0 等）+ 年代匹配 + 去重
+│   ├── clips.py           影视切片素材库：索引 / 多维检索 / 规范化导入 / 合规配额
+│   ├── needs.py           素材需求清单：分镜 → 槽位（「要剪什么片段」的工作单）
 │   ├── subtitles.py       ASS 字幕（按分镜时长铺时间轴）
 │   ├── media.py           Pillow 合成画面（背景层 + 前景层，两块分开出图）
 │   ├── video.py           ffmpeg：编码片段 / 拼接 / 混 BGM / 读回参数
@@ -70,10 +72,13 @@ historical_story_gen/
 │   └── cli.py             命令行
 ├── scripts/
 │   ├── smoke_video.py     零 LLM 的媒体链路冒烟测试 ← 媒体出问题先跑它
-│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导，227 项）
+│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导/切片/需求清单，287 项）
 │   ├── probe_clean_images.py  零成本配图专项探测（clean 策略下的命中率/版权/年代）
 │   ├── rerender.py        从已有 metadata 重渲染（复用文稿和语音，只换配图/画面）
 │   ├── check_layout.py    量一帧里标题带和字幕带是否重叠（不靠肉眼）
+│   ├── make_needs.py      出素材需求清单（脚本 → 槽位工作单；脚本先行那一环）
+│   ├── import_clip.py     导入影视切片（规范化 + 去音轨 + 登记 + 绑槽位）
+│   ├── calib_rate.py      从已生成期反算真实字/秒（校准 chars_per_second，别用 probe-tts）
 │   ├── clone_voice.py     用参考音频克隆音色（MiniMax voice_clone → 可复用的 voice_id）
 │   ├── tts_preview.py     多音色 A/B 试听（同一篇稿子各出一条 mp3，不跑 LLM/配图/渲染）
 │   └── audit_config.py    配置审计（找出代码从不读的假开关 / 配置里没写的键）

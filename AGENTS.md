@@ -93,17 +93,25 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（227 项，不调 API）
+run.bat test                              :: 零成本回归测试（287 项，不调 API）
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
 python scripts\tts_preview.py --script <脚本.md> --voice A --voice B
 python scripts\audit_config.py            :: 配置审计（动了 config.yaml 之后跑一下）
+python scripts\make_needs.py              :: 出素材需求清单（脚本先行：剪素材的工作单）
+python scripts\import_clip.py --file <mp4> --id <id> --title <片名> --slots s04_sh1
+python scripts\calib_rate.py              :: 反算真实字/秒（校准 chars_per_second，别用 probe-tts）
 python scripts\rerender.py                :: 复用文稿+语音，只重做配图/画面
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
 
-**改完代码先跑 `run.bat test`**（227 项，零成本，覆盖的都是实跑撞过的坑）。
+**影视切片的工作流（顺序不能颠倒）**：
+`run.bat plan -t "题材"` → `python scripts\make_needs.py`（出槽位工作单）
+→ 人工按单剪片段 → `python scripts\import_clip.py` 绑槽位 → 渲染。
+需求清单必须排在剪素材**之前**：剪素材是最慢的人工环节，先剪后配会剪一堆用不上的。
+
+**改完代码先跑 `run.bat test`**（287 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -160,6 +168,27 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
     会被 `-t 镜头时长` **截断，旁白直接被吃掉**。正确路径：
     各镜头编码为无声段 → concat 成场景段 → `video.attach_audio` 贴回整条语音。
     （该路径在 T6 实现完成之前，不要手写多镜头。）
+13. **需求清单的槽位时长分三级取值，不要图省事只按字数估**（`needs.scene_durations`）：
+    实测音频 > metadata 里记的实测 `seconds` > 按字数估。
+    只有 **plan 产物**（脚本先行、还没配音）才会走到估算那级。
+    为什么立这条：第 7 期用当时的 4.6 字/秒估是 311 秒，而 metadata 记的实测是
+    414 秒（那期用的是慢 36% 的克隆音色），**低估 25%** —— 用户照着清单剪出来的
+    片段就会全短一截。能拿真值必须拿真值。
+14. **校准 `story.chars_per_second` 必须按音色分组，且先验证音色**
+    （`scripts/calib_rate.py`，不是 `probe-tts`）：
+    用 `tts.audio_tag` 反查候选（音色, 语速）组合，缓存名全部命中才采信；
+    验证不通过的期**排除并标注**。
+    为什么：metadata 的 `tts_spec` 是 2026-09-14 才有，更早的期全被当成「未知」混着
+    平均，把 4.70 拉低成了 4.59（混进了另一期 4.14 字/秒的、根本不是这个音色录的）。
+    不同音色差得很远（克隆音色 3.45 vs 系统音色 4.70，差 36%），
+    拿错的换算值去估时长，清单里的片段长度就全错了。
+15. **需求清单里「优先级」和「回退方案」必须解耦**（`needs._priority` / `_fallback_of`）：
+    优先级（★必须）**只认「章节开场」**；「分镜太长，静态图撑不住」只改**回退方案**
+    （→ AI 生成）。
+    为什么：把「时长 ≥ 阈值」塞进优先级判据会立刻失效 ——
+    第一次阈值 24 秒把 38/58 个槽位标成必须；第二次改 30 秒，又被 plan 阶段
+    ~31 秒/场的估算全命中（9 场戏全标必须）。优先级一泛滥就等于没有优先级。
+    同理，每个分镜只有**第 1 段**标必须，第 2 段起标「↺ 复用」（素材粒度 = 分镜）。
 
 ---
 
