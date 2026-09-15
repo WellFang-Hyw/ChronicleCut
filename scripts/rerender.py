@@ -176,8 +176,14 @@ def main() -> int:
         from hsg.config import ApiKeys as _ApiKeys
         from hsg.llm import LLM as _LLM
 
+        # 先初始化：万一 _LLM 打开失败，后面的 scene_en / scene_kind 也不会 NameError
+        scene_en: dict[int, str] = {}
+        scene_kind: dict[int, str] = {}
         with _LLM(cfg, _ApiKeys.from_env()) as _llm:
             scene_en = images_mod.translate_scene_queries(
+                [(s.index, s.image_query) for s in scenes], cfg, _llm)
+            # 与 pipeline 一致：判每个分镜的画面类型，分派「器物」/「场景」风格后缀
+            scene_kind = images_mod.classify_scene_kinds(
                 [(s.index, s.image_query) for s in scenes], cfg, _llm)
 
         def _grab(s: Scene) -> None:
@@ -193,7 +199,8 @@ def main() -> int:
                 queries_en += [q for q in ch.image_queries_en if q and q not in queries_en]
             p, credit, src, attempts = images_mod.fetch_for_scene(
                 s.index, queries, cfg, cache_dir, used,
-                queries_en=queries_en, period=period)
+                queries_en=queries_en, period=period,
+                kind=scene_kind.get(s.index, images_mod.KIND_OBJECT))
             if p:
                 s.image_path, s.image_credit, s.image_source = p, credit, src
                 pick = next((a for a in reversed(attempts) if a.get("picked")), {}) or {}

@@ -336,6 +336,12 @@ def run(
         # 场景词完全空转，配图会退化成「章节级英文词 → 兜底泛词」（实测 18/18 如此）。
         scene_en = images_mod.translate_scene_queries(
             [(s.index, s.image_query) for s in scenes], cfg, llm)
+        # 分镜画面类型：决定这个分镜用「器物静物」还是「人物场景」风格后缀。
+        # 不分派的话，器物向后缀会把叙事分镜也拉成静物小品（第 7 期实测：
+        # 要找坊市布局图给了干裂土地、要找巡夜兵丁给了灯笼、要找衙门审案
+        # 给了一把西式法槌）。同样是先铺规则兜底、再用一次便宜的 LLM 调用覆盖。
+        scene_kind = images_mod.classify_scene_kinds(
+            [(s.index, s.image_query) for s in scenes], cfg, llm)
 
         def _grab(s) -> None:
             queries = [s.image_query]
@@ -350,13 +356,15 @@ def run(
                 queries_en += [q for q in ch.image_queries_en if q and q not in queries_en]
             p, credit, src, attempts = images_mod.fetch_for_scene(
                 s.index, queries, cfg, cache_dir, used,
-                queries_en=queries_en, period=period)
+                queries_en=queries_en, period=period,
+                kind=scene_kind.get(s.index, images_mod.KIND_OBJECT))
             s.image_path, s.image_credit, s.image_source = p, credit, src
             pick = next((a for a in reversed(attempts) if a.get("picked")), {}) or {}
             s.image_license = str(pick.get("license") or "")
             src_log.append({"scene": s.index, "queries": queries, "queries_en": queries_en,
                             "result": p.name if p else None, "source": src,
                             "license": s.image_license, "credit": credit,
+                            "kind": scene_kind.get(s.index),
                             "attempts": attempts})
 
         with ThreadPoolExecutor(max_workers=workers) as pool:

@@ -93,7 +93,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（156 项，不调 API）
+run.bat test                              :: 零成本回归测试（189 项，不调 API）
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
@@ -103,7 +103,7 @@ python scripts\rerender.py                :: 复用文稿+语音，只重做配�
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
 
-**改完代码先跑 `run.bat test`**（156 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（189 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -127,6 +127,19 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
    `run.bat probe-images --download` 实测下载速度。
 7. 音色克隆重名/参数坑见 `命令速查.md` 的「音色克隆」一节
    （`file_id` 必须传整数；`get_voice` 列表看不到克隆音色，要靠在声才算成功）。
+8. **配图风格后缀必须按分镜类型分派，不要合成一套。**
+   器物向后缀里「整幅画面只有器物本身」这种约束会把**叙事分镜**也压成静物小品
+   （第 7 期实测：要找坊墙坊门给了干裂土地、要找巡夜兵丁给了灯笼、
+   要找衙门审案给了**一把西式法槌**）。分派逻辑在 `images.classify_scene_kinds`，
+   规则兜底 + 一次 LLM 覆盖。两条后缀都**不许**出现「工笔/绢本」（会诱发伪书法
+   题跋 + 红印章）和「摄影」（会诱发图库水印），这个坑踩过两轮。
+9. **封面/画面的位置类改动，必须用像素量，不许用视觉模型估。**
+   做法：按 `media.build_cover` 的同一路径只重建背景层（配图裁切→压暗→模糊，
+   不画字），和成品做 `ImageChops.difference`，差出来的就是程序画上去的元素，
+   按行统计能直接算出每个文字块的确切 y 区间。
+   为什么立这条：上一轮靠视觉模型目测，把「标语距离底 11.6%」判成了「约 10%，安全」，
+   结论正好相反。同理，标题折行这类回归也要靠断言钉住（`media.cover_title_fit`），
+   在图上看不出「怎/样」和「怎样」的区别。
 
 ---
 

@@ -265,6 +265,67 @@ def cover_title_layout(title: str) -> str:
     return re.sub(r"([：:])\s*", r"\1\n", title or "", count=1)
 
 
+def _title_segments(title_layout: str) -> list[str]:
+    """把（已按冒号断过一次的）标题拆成段：每段都希望**整段占一行**。"""
+    return [s.strip() for s in (title_layout or "").split("\n") if s.strip()]
+
+
+def cover_title_lines(title_layout: str, font: ImageFont.FreeTypeFont,
+                      max_width: int) -> list[str]:
+    """把标题排成行：**优先整段占一行**。
+
+    为什么不直接调 _wrap_by_clause：冒号后那一段内部往往没有标点
+    （「宵禁之后出门会怎样？」整段就是一个小句），标点优先断行会当场退回硬折，
+    于是「怎样」被折成「怎/样」。第 7 期封面真发生过，
+    是用「重建纯背景层 + 逐像素差分」定位到 y 440–937 那两行的。
+
+    所以顺序是：整段放下 → 按标点断 → 硬折（最后手段）。
+    字号由 cover_title_fit 在循环里往下缩，缩到能整段放下为止。
+    """
+    out: list[str] = []
+    for seg in _title_segments(title_layout):
+        if font.getlength(seg) <= max_width:
+            out.append(seg)
+        else:
+            out.extend(_wrap_by_clause(seg, font, max_width))
+    return [ln for ln in out if ln.strip()]
+
+
+def cover_title_fit(title_layout: str, base_px: int, max_width: int, avail_h: int,
+                    min_px: int = 30) -> tuple[ImageFont.FreeTypeFont, list[str]]:
+    """给标题挑一个字号：从 base_px 往下缩，缩到每段能整段占一行、且不超高。
+
+    ⚠️ 判据里必须有「还有段被硬折」这一条。只靠 len(lines) > 3 是不够的：
+    「夜里的城：宵禁之后出门会怎样？」在 105px 下会折成 3 行
+    （「夜里的城：」/「宵禁之后出门会怎」/「样？」），3 行并没有超额，
+    字号就不会往下缩，「样？」就一直留在那儿 —— 第一次改的时候正是这么翻的车。
+
+    抽成独立函数是为了**可测**：这个回归必须能用断言钉住，
+    不能靠人眼看图（在图上看不出「怎/样」和「怎样」的区别）。
+    返回 (字体, 行列表)；超过 3 行才用省略号收尾。
+    """
+    segs = _title_segments(title_layout)
+    base = max(min_px, int(base_px))
+    f = _font(base, bold=True)
+
+    def too_wide(ff: ImageFont.FreeTypeFont) -> bool:
+        return any(ff.getlength(s) > max_width for s in segs)
+
+    lines = cover_title_lines(title_layout, f, max_width)
+    while base > min_px and (
+        too_wide(f)                                  # 还有段放不下 → 继续缩字号
+        or len(lines) > 3
+        or (f.getmetrics()[0] + f.getmetrics()[1] + 14) * len(lines) > avail_h
+    ):
+        base = int(base * 0.94)      # 步长 0.94：缩得更细，尽量靠缩字号保住整段
+        f = _font(base, bold=True)
+        lines = cover_title_lines(title_layout, f, max_width)
+    if len(lines) > 3:
+        lines = lines[:3]
+        lines[-1] = lines[-1][:-1] + "…"
+    return f, lines
+
+
 def build_cover(
     out_path: Path,
     size: tuple[int, int],
@@ -332,22 +393,10 @@ def build_cover(
     # 折行要避开「断在词中间」：中文没有词边界，纯按宽度硬折会把「古代」拆成
     # 「古/代」、「到底」拆成「到/底」（视觉检查抓到过，很难看）。
     # 本项目的标题统一是「小切口：具体疑问」结构，所以在冒号处优先断一次，
-    # _wrap_cjk 会按 \n 分段各自折行，两段各自贴边 → 断点自然落在短语边界上。
+    # 但冒号后那一段内部常常没有标点，光靠这一步不够 —— 见 cover_title_lines。
     title_layout = cover_title_layout(title)
     avail_h = int(th * (0.40 if portrait else 0.34))
-    base = title_font_px
-    f = _font(base, bold=True)
-    lines = [ln for ln in _wrap_cjk(title_layout, f, tw - 2 * margin_x) if ln.strip()]
-    while base > 30 and (
-        len(lines) > 3
-        or (f.getmetrics()[0] + f.getmetrics()[1] + 14) * len(lines) > avail_h
-    ):
-        base = int(base * 0.92)
-        f = _font(base, bold=True)
-        lines = [ln for ln in _wrap_cjk(title_layout, f, tw - 2 * margin_x) if ln.strip()]
-    if len(lines) > 3:
-        lines = lines[:3]
-        lines[-1] = lines[-1][:-1] + "…"
+    f, lines = cover_title_fit(title_layout, title_font_px, tw - 2 * margin_x, avail_h)
     a, d = f.getmetrics()
     block_h = (a + d + 14) * len(lines)
     ty = y + max(0, (avail_h - block_h) // 2)
@@ -363,14 +412,18 @@ def build_cover(
         _draw_block(draw, sub, f2, tw // 2, end_y + int(th * 0.030),
                     fill=(226, 231, 240), outline_w=2, line_gap=8)
 
-    # 底部：补充信息（如 slogan）。
-    # 位置放在 0.885h 左右而不是贴底 —— 竖版平台（抖音/视频号）底部约 15% 会被
-    # 账号信息与按钮盖住，贴底的那行字等于白写。
     if foot:
         f3 = _font(int(min(tw * 0.026, th * 0.016)), bold=True)
         lines3 = _wrap_cjk(foot, f3, tw - 2 * margin_x)[:1]
         a3, d3 = f3.getmetrics()
-        _draw_block(draw, lines3, f3, tw // 2, th - int(th * 0.115) - a3 - d3,
+        # 距底留白：竖版必须躲开平台底部约 15% 的遮挡区（账号信息/按钮），
+        # 贴底或压线的字等于白写。
+        # ⚠️ 原来写 0.115，实测字块落在距底 11.6%–13.2%，**仍在遮挡区内**
+        #    —— 是「重建纯背景层 + 逐像素差分」量出来的（字块 y 1667–1698 / 1920），
+        #    上一轮靠视觉模型估位置，估错了。现在留 0.19。
+        #    横版（B站/YouTube）没有这个遮挡问题，保持贴着底部。
+        foot_margin = int(th * (0.19 if portrait else 0.075))
+        _draw_block(draw, lines3, f3, tw // 2, th - foot_margin - a3 - d3,
                     fill=(255, 214, 82), outline_w=2, line_gap=6)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

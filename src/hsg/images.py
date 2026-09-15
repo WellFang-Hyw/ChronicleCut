@@ -813,13 +813,110 @@ def _try_batch(
 # 几乎是空的（"Qing dynasty copper coins" 只 1 条、"…porridge relief" 0 条），
 # 只有「时代+泛画种」宽词能命中，于是「要找清代铜钱」被配成明代斗彩婴戏杯。
 # 生成图没有这个限制（提示词就是分镜内容），而且没有第三方版权。
-_GEN_SUFFIX_DEFAULT = ("中国工笔风俗画风格，绢本设色，色调灰暗克制，"
-                       "画面中不要出现任何文字、书法、题字、落款、印章、署名、水印")
+#
+# ---- 两套风格后缀：器物向 / 场景向 ----
+# 为什么要分两套：器物向里写死了「整幅画面只有器物本身」，实测会把**所有**分镜
+# 都拉成静物小品 —— 第 7 期 18 张里，要找坊市布局图给了干裂土地、要找巡夜兵丁
+# 给了灯笼和木杖、要找衙门审案给了**一把西式法槌**（时代错乱）。
+# 而当初收窄成器物向，是为了压掉「伪书法题字 + 红印章」——那两个毛病是
+# 「工笔/绢本」这两个词诱发的（另外「摄影」会诱发图库水印，两头都不能用）。
+# 所以正确做法不是二选一，而是：器物类分镜走静物向，叙事类走场景向，
+# 两套都显式禁掉文字/印章/署名/水印/边框。
+#
+# ⚠️ 内置默认值必须和 config.yaml 同向。这里原来写的是「工笔风俗画/绢本设色」，
+#    config 已按实测改掉，但默认值没跟着改 —— 等于埋了个雷：
+#    谁删掉配置键，伪题跋和红印章就回来了。
+_GEN_SUFFIX_DEFAULT = (
+    "中国古代器物静物特写，暖光，浅景深，质感真实，色调灰暗克制，"
+    "整幅画面只有器物本身，不要任何文字、印章、署名、水印、边框，"
+    "不要仿照书画题跋的排版，不要书法题字，不要落款")
+_GEN_SUFFIX_SCENE_DEFAULT = (
+    "中国古代历史题材的叙事画面，以人物与场景为主体，中景或全身构图，"
+    "真实质感，暖光侧照，浅景深，色调灰暗克制，"
+    "不要任何文字、印章、署名、水印、边框，不要仿照书画题跋的排版，"
+    "不要书法题字，不要落款，不要画面里出现书页、碑文或匾额文字")
+
+# 分镜画面类型：object = 器物/文书静物；scene = 人物/场所叙事
+KIND_OBJECT, KIND_SCENE = "object", "scene"
+_KIND_SYSTEM = """你判断一条中文「配图检索词」适合画成哪一类画面，只输出 object 或 scene。
+
+object = 单件器物、文书、钱粮、刑具、食物、服饰，用**静物特写**就能讲清楚的。
+         例：清代铜钱 串钱 道光通宝 实物 / 唐律疏议古籍书影 笞杖刑具实物
+scene  = 必须出现**人物或场所**才讲得清楚的：市井、街道、城门坊门、衙门审案、
+         巡夜兵丁、农耕、赈济、宴饮、夜景、驿路。
+         例：明代京城巡夜兵丁古画 / 唐代长安城坊市布局图 / 清代衙门审案场景
+
+判断要点：
+1. 出现人物身份（兵丁/官/吏/百姓/农夫/妇人/工匠/商贩/僧人）→ scene
+2. 出现场所（城/坊门/街市/衙门/驿路/店铺/村落/桥/夜市/市井）→ scene
+3. 只有单件物品或一篇文书，没有人物也没有场所 → object
+4. 拿不准时选 scene（本频道讲的是故事，人物场景更贴合）
+
+只输出 JSON：{"kinds": [{"index": 序号, "kind": "object" 或 "scene"}]}"""
+
+# 规则兜底用的关键词（LLM 不可用/异常时靠它，scene 略占优）
+_SCENE_KW = ("人", "兵", "官", "吏", "百姓", "民", "农", "妇", "工匠", "商", "僧",
+             "队伍", "行列", "市", "街", "城", "坊", "门", "桥", "衙", "堂",
+             "店", "铺", "村", "田", "路", "驿", "夜", "庙", "祭", "宴",
+             "巡", "审", "赈", "婚", "丧", "戏", "场景", "市井")
+_OBJECT_KW = ("器物", "实物", "钱", "币", "银", "账", "契", "券", "票", "古籍",
+              "书影", "刻本", "纸", "笔", "墨", "砚", "杯", "碗", "壶", "罐",
+              "瓶", "灯", "烛", "伞", "扇", "衣", "冠", "棺", "俑", "玉",
+              "瓷", "陶", "铁", "瓦", "秤", "尺", "斗", "食", "饭", "粥",
+              "饼", "茶", "酒", "药", "税", "粮", "仓", "具")
 
 
-def build_generate_prompt(prompt: str, cfg: Config) -> str:
-    """拼生成提示词：分镜的检索词 + 风格/禁文字后缀（截到接口上限 1500 字符）。"""
-    style = str(cfg.images.get("generate_style_suffix") or _GEN_SUFFIX_DEFAULT)
+def _guess_kind_zh(query: str) -> str:
+    """规则兜底判类型：出现人物/场所词就按 scene，否则 object。"""
+    q = query or ""
+    s = sum(1 for k in _SCENE_KW if k in q)
+    o = sum(1 for k in _OBJECT_KW if k in q)
+    return KIND_SCENE if (s >= 1 and s >= o) else KIND_OBJECT
+
+
+def classify_scene_kinds(scene_rows: list[tuple[int, str]], cfg: Config, llm) -> dict[int, str]:
+    """给每个分镜判画面类型 {分镜序号: "object"|"scene"}，供分派风格后缀。
+
+    先铺规则结果兜底，再用一次便宜的 LLM 调用覆盖；任何异常都返回兜底值，
+    不阻断出片。开关：images.classify_scene_kinds
+    """
+    if not bool(cfg.images.get("classify_scene_kinds", True)):
+        return {}
+    rows = [(i, q) for i, q in (scene_rows or []) if q]
+    if not rows:
+        return {}
+    kinds = {i: _guess_kind_zh(q) for i, q in rows}
+    if llm is None:
+        return kinds
+    try:
+        listing = "\n".join(f"{i}. {q}" for i, q in rows)
+        data = llm.chat_json(_KIND_SYSTEM,
+                             f"判断下面每一条的类型：\n\n{listing}\n\n"
+                             f"【输出】只输出 JSON（index 就是上面的序号）：\n"
+                             f'{{"kinds": [{{"index": 1, "kind": "scene"}}]}}')
+        for item in (data or {}).get("kinds") or []:
+            try:
+                idx = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            kind = str(item.get("kind") or "").strip().lower()
+            if idx in kinds and kind in (KIND_OBJECT, KIND_SCENE):
+                kinds[idx] = kind
+    except Exception as exc:  # noqa: BLE001
+        log.warning("分镜类型判定失败，用规则兜底：%s", exc)
+    return kinds
+
+
+def build_generate_prompt(prompt: str, cfg: Config, kind: str = KIND_OBJECT) -> str:
+    """拼生成提示词：分镜的检索词 + 风格/禁文字后缀（截到接口上限 1500 字符）。
+
+    kind="scene" 时用场景向后缀（否则所有分镜都会变成静物小品，见上方注释）。
+    """
+    if str(kind).strip().lower() == KIND_SCENE:
+        style = str(cfg.images.get("generate_style_suffix_scene")
+                    or _GEN_SUFFIX_SCENE_DEFAULT)
+    else:
+        style = str(cfg.images.get("generate_style_suffix") or _GEN_SUFFIX_DEFAULT)
     p = (prompt or "").strip().rstrip("。")
     s = style.strip().rstrip("。")
     full = f"{p}。{s}" if p and s else (p or s)
@@ -827,7 +924,8 @@ def build_generate_prompt(prompt: str, cfg: Config) -> str:
 
 
 def generate_scene_image(scene_index: int, prompt: str, cfg: Config,
-                         cache_dir: Path) -> tuple[Path | None, str, str, dict]:
+                         cache_dir: Path,
+                         kind: str = KIND_OBJECT) -> tuple[Path | None, str, str, dict]:
     """用 MiniMax image-01 生成一张配图。返回 (路径, 出处标注, 来源名, 记录)。
 
     实测（2026-09）：
@@ -847,7 +945,7 @@ def generate_scene_image(scene_index: int, prompt: str, cfg: Config,
     import httpx
 
     base = str(cfg.tts.minimax.base_url).rstrip("/")
-    full = build_generate_prompt(prompt, cfg)
+    full = build_generate_prompt(prompt, cfg, kind)
     payload = {
         "model": str(im.get("generate_model") or "image-01"),
         "prompt": full[:1500],
@@ -858,7 +956,7 @@ def generate_scene_image(scene_index: int, prompt: str, cfg: Config,
         "aigc_watermark": bool(im.get("generate_aigc_watermark", False)),
     }
     rec: dict = {"generator": payload["model"], "prompt": full,
-                 "aspect": payload["aspect_ratio"]}
+                 "aspect": payload["aspect_ratio"], "kind": kind}
     t0 = time.monotonic()
     try:
         with httpx.Client(timeout=float(im.get("generate_timeout", 300)),
@@ -912,6 +1010,7 @@ def fetch_for_scene(
     used: list[int],
     queries_en: list[str] | None = None,
     period: tuple[int, int] | None = None,
+    kind: str = KIND_OBJECT,
 ) -> tuple[Path | None, str, str, list[dict]]:
     """给一个分镜找一张图。
 
@@ -931,7 +1030,7 @@ def fetch_for_scene(
     # 失败（额度/限流/接口异常）就静默退回下面的图库检索，不会因此没图。
     all_attempts: list[dict] = []
     if bool(im.get("generate", False)):
-        p, label, src, rec = generate_scene_image(scene_index, qs[0], cfg, cache_dir)
+        p, label, src, rec = generate_scene_image(scene_index, qs[0], cfg, cache_dir, kind)
         if rec:
             all_attempts.append({**rec, "round": "generate"})
         if p:

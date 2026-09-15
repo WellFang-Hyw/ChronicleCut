@@ -614,6 +614,36 @@ def test_cover() -> None:
     check_true("没有一行以逗号/顿号开头",
                not any(ln and ln[0] in "，、。；" for ln in lines), f"→ {lines}")
 
+    # ---- 标题折行：整段优先，绝不把词拆开 ----
+    # 回归来源：第 7 期封面把「怎样」折成了「怎/样」（逐像素差分定位到 y 440–937）。
+    # 根因：冒号后那段内部没有标点，_wrap_by_clause 当场退回硬折。
+    _tw, _th = 1080, 1920
+    _usable = _tw - 2 * int(_tw * 0.08)
+    _base_px = int(min(_tw * 0.105, _th * 0.055))
+    fit_f, fit_lines = media.cover_title_fit(
+        media.cover_title_layout("夜里的城：宵禁之后出门会怎样？"),
+        _base_px, _usable, int(_th * 0.40))
+    check("标题折成 2 行（冒号处断一次，后半段整段占一行）", fit_lines,
+          ["夜里的城：", "宵禁之后出门会怎样？"])
+    check_true("「怎样」没被拆到两行", any("怎样" in ln for ln in fit_lines),
+               f"→ {fit_lines}")
+    check_true("标题不丢字（拼回去等于原文）",
+               "".join(fit_lines) == "夜里的城：宵禁之后出门会怎样？", f"→ {fit_lines}")
+    check_true("每一行都在可用宽度内",
+               all(fit_f.getlength(ln) <= _usable for ln in fit_lines), f"→ {fit_lines}")
+    # 更长的一期也要能不拆词（第 6 期标题：后半段 14 字）
+    _, fit2 = media.cover_title_fit(
+        media.cover_title_layout("一顿饭多少钱：古代打工人的三餐到底怎么吃？"),
+        _base_px, _usable, int(_th * 0.40))
+    check_true("第 6 期的长标题同样不拆词（「到底」完整）",
+               any("到底" in ln for ln in fit2) and len(fit2) <= 3, f"→ {fit2}")
+    # 超长标题：缩到下限还放不下，允许按标点断/硬折，但不能炸、不能超 3 行
+    _, fit3 = media.cover_title_fit(
+        media.cover_title_layout(
+            "一个写得特别特别长的标题：后面这一段故意堆到字号缩到下限也放不下好触发兜底"),
+        _base_px, _usable, int(_th * 0.40))
+    check_true("超长标题不炸且行数 ≤3", 1 <= len(fit3) <= 3, f"→ {fit3}")
+
     cfg = load_config()
     tmp = ROOT / "data/tmp"
     tmp.mkdir(parents=True, exist_ok=True)
@@ -631,12 +661,104 @@ def test_cover() -> None:
         # 文字是白的/黄的 —— 画面里必须有足够多的亮像素，否则说明字没画上去
         bright = sum(1 for px in im.convert("L").getdata() if px > 200)
         stat = ImageStat.Stat(im.convert("L"))
+        # ---- 底部标语必须躲开竖屏平台约 15% 的遮挡区 ----
+        # 回归来源：上一版留白 0.115，实测字块落在距底 11.6%–13.2%，**仍在遮挡区内**
+        # （用「重建纯背景层 + 逐像素差分」量出来的：字块 y 1667–1698 / 1920）。
+        # 这里扫金色像素把它钉住；只扫下半幅，避开顶部的金色栏目名。
+        # ⚠️ 必须写在 with 里面：PIL 出了 with 就关掉图像，getpixel 取不到了。
+        def _goldish(px) -> bool:
+            r, g, b = px[0], px[1], px[2]
+            return r > 200 and g > 170 and b < 140
+
+        gold_ys = [y for y in range(int(1920 * 0.5), 1920, 3)
+                   for x in range(0, 1080, 3) if _goldish(im.getpixel((x, y)))]
+        check_true("封面底部标语画上去了", bool(gold_ys), f"金像素={len(gold_ys)}")
+        if gold_ys:
+            check_true("标语底边在距底 15% 以上（躲开竖屏遮挡区）",
+                       max(gold_ys) <= int(1920 * 0.85),
+                       f"max_y={max(gold_ys)} → 距底 {100 * (1920 - max(gold_ys)) / 1920:.1f}%")
+            check_true("标语没有飘到画面中部", min(gold_ys) > int(1920 * 0.7),
+                       f"min_y={min(gold_ys)}")
     check_true("封面画上了文字（亮像素数量合理）", 3000 < bright < 200000,
                f"bright={bright}")
     check_true("封面不是纯色空图（有明暗层次）", stat.stddev[0] > 20,
                f"stddev={stat.stddev[0]:.1f}")
     out.unlink(missing_ok=True)
     src.unlink(missing_ok=True)
+
+
+def test_scene_kinds() -> None:
+    """分镜画面类型判定 + 按类型分派风格后缀。
+
+    这是第 7 期配图跑偏的修复：器物向后缀写死「整幅画面只有器物本身」，
+    把叙事分镜也拉成了静物小品（要找巡夜兵丁给了灯笼、要找衙门审案给了西式法槌）。
+    """
+    print("\n[分镜类型 images.classify_scene_kinds / build_generate_prompt(kind)]")
+    from hsg import images
+
+    # ---- 规则兜底 ----
+    check("「巡夜兵丁」→ scene", images._guess_kind_zh("明代京城巡夜兵丁古画"), "scene")
+    check("「坊市布局图」→ scene", images._guess_kind_zh("唐代长安城坊市布局图 坊墙坊门遗址"),
+          "scene")
+    check("「衙门审案场景」→ scene", images._guess_kind_zh("清代衙门审案场景古画"), "scene")
+    check("「街市夜市商铺」→ scene", images._guess_kind_zh("清明上河图 北宋东京街市 夜市 商铺"),
+          "scene")
+    check("「铜钱实物」→ object", images._guess_kind_zh("清代铜钱 串钱 道光通宝 实物"), "object")
+    check("「古籍书影刑具实物」→ object",
+          images._guess_kind_zh("唐律疏议古籍书影 笞杖刑具实物"), "object")
+    check("空词保守判 object", images._guess_kind_zh(""), "object")
+
+    cfg = load_config()
+    rows = [(1, "明代京城巡夜兵丁古画"), (2, "清代铜钱 串钱 实物")]
+
+    class _Fake:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def chat_json(self, *a, **k):
+            return self.payload
+
+    class _Boom:
+        def chat_json(self, *a, **k):
+            raise RuntimeError("boom")
+
+    check("LLM 结论覆盖规则值",
+          images.classify_scene_kinds(
+              rows, cfg, _Fake({"kinds": [{"index": 1, "kind": "object"},
+                                          {"index": 2, "kind": "scene"}]})),
+          {1: "object", 2: "scene"})
+    check("越界与非法值被丢弃、退回规则值",
+          images.classify_scene_kinds(
+              rows, cfg, _Fake({"kinds": [{"index": 9, "kind": "scene"},
+                                          {"index": 1, "kind": "说不清"}]})),
+          {1: "scene", 2: "object"})
+    check("没有 llm 时用规则值",
+          images.classify_scene_kinds(rows, cfg, None), {1: "scene", 2: "object"})
+    check("LLM 异常时不炸、退回规则值",
+          images.classify_scene_kinds(rows, cfg, _Boom()), {1: "scene", 2: "object"})
+    check("空输入返回空", images.classify_scene_kinds([], cfg, None), {})
+    _cfg_off = load_config()
+    _cfg_off.images["classify_scene_kinds"] = False
+    check("开关关闭时返回空（全部按器物向）",
+          images.classify_scene_kinds(rows, _cfg_off, None), {})
+
+    # ---- 后缀分派 ----
+    sfx_obj = str(cfg.images.get("generate_style_suffix") or "")
+    sfx_scn = str(cfg.images.get("generate_style_suffix_scene") or "")
+    p_obj = images.build_generate_prompt("清代铜钱 串钱 实物", cfg)
+    p_scn = images.build_generate_prompt("明代京城巡夜兵丁古画", cfg, "scene")
+    check_true("默认（object）用器物后缀", sfx_obj in p_obj)
+    check_true("kind=scene 用场景后缀", sfx_scn in p_scn)
+    check_true("两条后缀不是同一条", bool(sfx_obj) and bool(sfx_scn) and sfx_obj != sfx_scn)
+    check_true("场景后缀不再写死「只有器物本身」", "只有器物本身" not in sfx_scn)
+    check_true("场景后缀以人物与场景为主体", "人物与场景" in sfx_scn)
+    check_true("空 kind 走器物后缀", sfx_obj in images.build_generate_prompt("清代铜钱", cfg, ""))
+    for _n, _s in (("器物", sfx_obj), ("场景", sfx_scn)):
+        check_true(f"{_n}后缀都禁文字/印章/水印",
+                   all(k in _s for k in ("文字", "印章", "水印")))
+        check_true(f"{_n}后缀不含「工笔/绢本/摄影」（实测会诱发题跋或图库水印）",
+                   not any(k in _s for k in ("工笔", "绢本", "摄影")))
+    check_true("场景提示词仍在 1500 以内", len(p_scn) <= 1500, f"len={len(p_scn)}")
 
 
 def test_scene_query_translation() -> None:
@@ -742,6 +864,7 @@ def main() -> int:
     test_renumber_and_feedback()
     test_tts_speed_plumbing()
     test_cover()
+    test_scene_kinds()
     test_scene_query_translation()
     test_generate_image_prompt()
     print("\n" + "=" * 60)
