@@ -431,6 +431,34 @@ def test_topic_levels() -> None:
                no_llm.type in (topics.UNKNOWN_TYPE, "") and no_llm.desc == "",
                f"→ type={no_llm.type!r}")
 
+    # ---- 手填两级（-t + --topic-type + --topic-desc）
+    from hsg import cli
+
+    a = cli.build_parser().parse_args(["-t", "驿站那匹马：一封加急军报要跑几天？",
+                                       "--topic-type", "行旅与驿传",
+                                       "--topic-desc", "一封加急公文在路上要经过什么。"])
+    check("三个参数都能解析出来",
+          (a.topic_type, bool(a.topic_desc)), ("行旅与驿传", True))
+    built = cli._build_topic(a.topic, a.topic_type, a.topic_desc)
+    check("手填的两级进 Topic（并带上类型的高层描述）",
+          (built.type, built.type_desc != "", built.desc != ""), ("行旅与驿传", True, True))
+    only_title = cli._build_topic("某个手填的标题")
+    check("只给标题时类型/描述留空（后面由模型补）",
+          (only_title.type, only_title.desc), ("", ""))
+    try:
+        cli._build_topic("标题", "不存在的类型")
+        check("类型写错要被拦下（不能静默归到未分类）", False, "居然没报错")
+    except SystemExit as exc:
+        check("类型写错要被拦下（退出码 2）", exc.code, 2)
+    no_type_desc = cli._build_topic("标题", type_name="", desc="只有描述")
+    check("只给描述也可以（类型交给模型判）", (no_type_desc.type, no_type_desc.desc),
+          ("", "只有描述"))
+    # 手填的两级不能被模型覆盖（也不该白花一次调用）
+    fake2 = _FakeLLM({"type": "疾病与丧葬", "desc": "模型瞎写的描述"})
+    kept = topics.fill_levels(built, cfg, fake2)
+    check("手填的两级原样保留，不调模型", (kept.type, kept.desc, fake2.calls),
+          ("行旅与驿传", "一封加急公文在路上要经过什么。", 0))
+
     # ---- 选题池的可读输出（run.bat topics）
     txt = topics.render_pool("small")
     check_true("选题池输出含类型与高层描述", "■ 行旅与驿传" in txt and "人与物的长途移动" in txt)

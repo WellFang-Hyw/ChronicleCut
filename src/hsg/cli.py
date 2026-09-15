@@ -83,6 +83,24 @@ def _orientations(cfg, arg: str) -> list[str]:
     return [arg]
 
 
+def _build_topic(title: str, type_name: str = "", desc: str = ""):
+    """把「手填的标题 + 指定的类型/描述」拼成 Topic。
+
+    类型是**受控词表**：写错了当场报错并列出全部可选值，不要静默归到「未分类」——
+    静默归类的后果是「避开连着做同一路」失效，而且你要过很久才会发现。
+    """
+    from . import topics as topics_mod
+
+    t = str(type_name or "").strip()
+    if t and t not in topics_mod.STORY_TYPES:
+        log.error("没有这个故事类型：%s", t)
+        log.error("  可选：%s", "、".join(topics_mod.all_types()))
+        log.error("  看全部类型与描述：run.bat topics")
+        raise SystemExit(2)
+    return topics_mod.Topic(title=str(title or "").strip(), type=t,
+                            desc=str(desc or "").strip())
+
+
 def _resolve_topic(cfg, args):
     """定题材：显式指定先查重；否则从池子里挑没做过的；池子挑空了让模型出个新题。
 
@@ -108,16 +126,30 @@ def _resolve_topic(cfg, args):
                 log.error("  · 确实要重做：加 --allow-duplicate")
                 raise SystemExit(2)
             log.warning("%s  —— 已指定 --allow-duplicate，继续", detail)
-        return topics.Topic(title=args.topic)
+        built = _build_topic(args.topic, getattr(args, "topic_type", ""),
+                             getattr(args, "topic_desc", ""))
+        if built.type:
+            log.info("本期类型（手动指定）：%s（%s）", built.type,
+                     topics.type_desc(built.type) or "—")
+        if built.desc:
+            log.info("这一期讲什么（手动指定）：%s", built.desc)
+        return built
 
     recs = history.load(cfg)
     mode = str(cfg.story.get("angle_mode") or "small")
     recent = topics.used_types(recs)          # 最近几期的类型：优先避开，别连着做同一类
+    # --type 与 --topic-type 在池子路径下是一个意思（都当类型过滤），
+    # 两者都给就以 --type 为准，并提醒一声，免得以为被忽略了
+    want_type = str(getattr(args, "type", "") or "") or str(getattr(args, "topic_type", "") or "")
     t = topics.pick(seed=getattr(args, "seed", None),
                     is_used=lambda x: history.is_used(cfg, x),
                     mode=mode,
-                    type_filter=str(getattr(args, "type", "") or ""),
+                    type_filter=want_type,
                     recent_types=recent)
+    if want_type and t is None:
+        log.error("「%s」这一类里的选题都做过了（或类型名写错）", want_type)
+        log.error("  看有哪些类型：run.bat topics　（池子挑空 → 用手填：run.bat -t \"标题\"）")
+        raise SystemExit(2)
     if t:
         log.info("自动选题：%s", t.title)
         log.info("  故事类型：%s（%s）", t.type or "未分类", t.type_desc or "—")
@@ -431,7 +463,12 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("内容")
     g.add_argument("-t", "--topic", help="故事主题；不填则从选题池随机挑（自动跳过做过的）")
     g.add_argument("--seed", type=int, help="随机选题的种子（复现同一题材）")
-    g.add_argument("--type", help="按故事类型挑题（如「行旅与驿传」；用 run.bat topics 看全部类型）")
+    g.add_argument("--type", help="按故事类型挑题（不指定 -t 时生效；如「行旅与驿传」）")
+    g.add_argument("--topic-type", dest="topic_type",
+                   help="直接指定本期的 L1 故事类型（配合 -t 手填选题时用；"
+                        "不填就由模型判。可选值见 run.bat topics）")
+    g.add_argument("--topic-desc", dest="topic_desc",
+                   help="直接指定本期的 L2 描述（「这一期到底讲什么」；不填就由模型生成）")
     g.add_argument("--allow-duplicate", action="store_true",
                    help="允许重做已生成过的题材（默认会拦下并提示）")
     g.add_argument("--minutes", type=float, help="目标总时长（分钟），默认 7")
