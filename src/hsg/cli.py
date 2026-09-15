@@ -83,6 +83,19 @@ def _orientations(cfg, arg: str) -> list[str]:
     return [arg]
 
 
+def _plan_stem(title: str) -> str:
+    """`plan` 产物的文件名主干：**必须带标题**。
+
+    只写「<日期>_plan」的话，同一天跑第二次 plan 会静默覆盖上一期的稿子和 metadata
+    —— 试两次选题，第一期就没了（踩过，只能从备份恢复）。
+    """
+    from datetime import datetime as _dt
+
+    from .pipeline import safe_filename as pipeline_safe
+
+    return f"{_dt.now().strftime('%Y%m%d')}_plan_{pipeline_safe(title)}"
+
+
 def _build_topic(title: str, type_name: str = "", desc: str = ""):
     """把「手填的标题 + 指定的类型/描述」拼成 Topic。
 
@@ -248,6 +261,7 @@ def cmd_plan(cfg, args) -> int:
     from .material import fetch_material
     from .outline import build_outline
     from .pipeline import print_timeline, timeline_rows, write_metadata, write_script
+    from .pipeline import safe_filename as pipeline_safe
     from .verify import audit_facts, final_check, llm_audit, report, rule_check
     from .writer import write_all
 
@@ -283,7 +297,7 @@ def cmd_plan(cfg, args) -> int:
     out = cfg.paths.get_path("output_dir")
     from datetime import datetime
 
-    stem = f"{datetime.now().strftime('%Y%m%d')}_plan"
+    stem = _plan_stem(story.title or topic.title)
     log.info("预估语音时长 %.2f 分钟（%.0f 秒）", est / 60, est)
     log.info("稿件：%s", write_script(story, cfg, out / f"{stem}_脚本.md", est))
     # ⚠️ 这里给的是 topic.title（字符串）：write_metadata 的 extra 会被 json.dumps，

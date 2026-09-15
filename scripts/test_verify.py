@@ -450,6 +450,15 @@ def test_topic_levels() -> None:
         check("类型写错要被拦下（不能静默归到未分类）", False, "居然没报错")
     except SystemExit as exc:
         check("类型写错要被拦下（退出码 2）", exc.code, 2)
+    # plan 产物文件名必须带标题，否则同一天跑第二次会覆盖第一次
+    st = cli._plan_stem("曹操杀吕伯奢：那句「宁我负人」到底谁写的？")
+    check_true("plan 文件名带日期与标题", st.startswith("20") and "_plan_" in st
+               and "曹操杀吕伯奢" in st, f"→ {st}")
+    check_true("同一天两个不同选题的文件名不同（不会互相覆盖）",
+               cli._plan_stem("甲题：一个例子") != cli._plan_stem("乙题：另一个例子"))
+    check_true("文件名里的非法字符被清掉",
+               not any(c in cli._plan_stem('a/b:c*d?e"f') for c in '/\\:*?"<>|'))
+
     no_type_desc = cli._build_topic("标题", type_name="", desc="只有描述")
     check("只给描述也可以（类型交给模型判）", (no_type_desc.type, no_type_desc.desc),
           ("", "只有描述"))

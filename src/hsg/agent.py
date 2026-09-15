@@ -41,8 +41,14 @@ log = logging.getLogger("hsg.agent")
 
 # ---------------------------------------------------------------- 找文件（阶段判据）
 def find_plan_metadata(cfg: Config) -> Path | None:
+    """找最近一次「只写稿」的产物。
+
+    glob 写成 `*plan*_metadata.json` 是有意的：plan 产物的命名历史上变过两次
+    （`<日期>_plan_metadata.json` → `<日期>_plan_<标题>_metadata.json`），
+    放开才能同时认出来；文件名里带标题是为了**同一天跑第二次不覆盖第一次**。
+    """
     out = cfg.paths.get_path("output_dir")
-    cands = sorted(out.glob("*_plan_metadata.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    cands = sorted(out.glob("*plan*_metadata.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0] if cands else None
 
 
