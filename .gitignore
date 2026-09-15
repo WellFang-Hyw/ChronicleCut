@@ -15,6 +15,11 @@ data/output/
 # （data/bgm/来源与许可.md 记了曲名/作者/许可类型/混音参数，发布举证用）
 data/bgm/**/*.mp3
 !data/bgm/.gitkeep
+# 影视切片素材（体积大 + 第三方版权内容），只留索引和许可留痕入库
+data/clips/**/*.mp4
+data/clips/**/*.mov
+data/clips/**/*.mkv
+data/clips/**/*.avi
 
 # python
 .venv/

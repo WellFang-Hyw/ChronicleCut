@@ -1,0 +1,211 @@
+"""导入影视切片素材：规范化 + 剥音轨 + 登记进素材库索引。
+
+用法（在项目根目录跑）：
+
+    # 导入一段切片（从 12:30 起取 8 秒）
+    python scripts\\import_clip.py --file D:\\raw\\sanguo94_ep12.mp4 ^
+        --id sg_caocao_01 --title "三国演义" --year 1994 ^
+        --people 曹操 --era 东汉末 --topic 三国 ^
+        --desc "横槊赋诗前的特写" --in 12:30 --out 12:38
+
+    # 可选：绑定槽位（需求清单里的 s04_sh1 这种），一个片段可以绑多个槽位
+    ... --slots s04_sh1,s11_sh2
+
+    # 看库里有什么 / 体检
+    python scripts\\import_clip.py --list
+    python scripts\\import_clip.py --check
+
+做三件事（每一件都有对应的坑）：
+  ① **规范化**：统一到 config.clips.spec（默认 1920x1080@30），铺满不拉伸
+  ② **剥音轨**：`-an`。不用原声（版权），且我们有自己的配音；
+     入库前会**再验一次**，带音轨直接拒绝（不靠"我记得加了 -an"）
+  ③ **登记**：写进 data/clips/index.json，记全来源字段（发布前要出出处清单）
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from hsg import clips  # noqa: E402
+from hsg.config import load_config  # noqa: E402
+
+
+def to_seconds(t: str) -> float:
+    """把 "12:30" / "1:02:03" / "750" / "750.5" 都转成秒。"""
+    s = str(t or "").strip()
+    if not s:
+        return 0.0
+    if ":" in s:
+        parts = [float(x) for x in s.split(":")]
+        while len(parts) < 3:
+            parts.insert(0, 0.0)
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    return float(s)
+
+
+def split_tags(v: str) -> list[str]:
+    return [x.strip() for x in str(v or "").replace("，", ",").split(",") if x.strip()]
+
+
+def clip_path(cfg, rec: dict) -> Path:
+    """一条素材的规范化产物的绝对路径（走 clips.clip_dir，别自己拼）。"""
+    return (clips.clip_dir(cfg) / str(rec.get("file") or "")).resolve()
+
+
+def do_import(a, cfg) -> int:
+    src = Path(a.file).expanduser().resolve()
+    if not src.exists():
+        print(f"✗ 找不到素材文件：{src}")
+        return 2
+    idx_path = clips.index_path(cfg)
+    idx = clips.load_index(idx_path)
+    if any(str(c.get("id")) == a.id for c in idx.get("clips", [])):
+        if not a.force:
+            print(f"✗ id 已存在：{a.id}（要覆盖请加 --force）")
+            return 3
+        clips.remove_clip(idx, a.id)
+        print(f"· 已移除同 id 的旧记录（--force）")
+
+    spec = cfg.clips.get("spec") or {}
+    max_sec = float(cfg.clips.get("max_seconds", 10.0))
+    dest = idx_path.parent / "norm" / f"{a.id}.mp4"
+    print(f"导入 {src.name} → {dest.relative_to(ROOT)}")
+    print(f"  目标规格 {spec.get('width')}x{spec.get('height')}@{spec.get('fps')}"
+          f"　单段上限 {max_sec:.0f}s　去音轨 ✓")
+    try:
+        got = clips.normalize_clip(src, dest, spec, max_sec,
+                                  src_in=to_seconds(a.in_), src_out=to_seconds(a.out))
+    except Exception as exc:  # noqa: BLE001
+        print(f"✗ 规范化失败：{exc}")
+        return 4
+
+    rec = {
+        "id": a.id,
+        "file": str(dest.relative_to(idx_path.parent)).replace("\\", "/"),
+        "dur": round(float(got["duration"]), 2),
+        "width": got.get("width"), "height": got.get("height"), "fps": got.get("fps"),
+        "title": a.title or "", "year": a.year or "",
+        "people": split_tags(a.people), "era": a.era or "",
+        "topic": split_tags(a.topic),
+        "slots": split_tags(a.slots),
+        "desc": a.desc or "", "note": a.note or "",
+        "src_file": str(src),
+        "rights": a.rights or f"{a.title or '?'}（{a.year or '?'}）· 合理引用，单段≤{max_sec:.0f}s，已去原声",
+    }
+    if clips.add_clip(idx, rec) is None:
+        print("✗ 登记失败（id 或 file 缺失）")
+        return 5
+    clips.save_index(idx_path, idx)
+    print(f"✓ 已入库：{a.id}　{rec['dur']}s　"
+          f"{rec['width']}x{rec['height']}　无音轨　人物={'/'.join(rec['people']) or '—'}"
+          f"　槽位={'/'.join(rec['slots']) or '—'}")
+    print(f"  索引：{idx_path.relative_to(ROOT)}　（现有 {len(idx['clips'])} 条）")
+    print("\n下一步：把这一条填进素材需求清单对应的槽位，或直接靠标签检索使用。")
+    return 0
+
+
+def do_list(cfg) -> int:
+    idx_path = clips.index_path(cfg)
+    idx = clips.load_index(idx_path)
+    items = idx.get("clips", [])
+    if not items:
+        print(f"素材库是空的（{idx_path.relative_to(ROOT)}）")
+        print("先剪好切片，再用 --file ... --id ... 导入。")
+        return 0
+    total = sum(float(c.get("dur") or 0) for c in items)
+    print(f"素材库 {len(items)} 条，合计 {total:.1f}s\n")
+    print(f"{'id':<20}{'时长':>6}  {'人物':<14}{'年代':<10}{'片源':<14}描述")
+    for c in sorted(items, key=lambda x: str(x.get("id"))):
+        print(f"{str(c.get('id'))[:19]:<20}{float(c.get('dur') or 0):>5.1f}s  "
+              f"{'/'.join(c.get('people') or [])[:13]:<14}{str(c.get('era'))[:9]:<10}"
+              f"{str(c.get('title'))[:13]:<14}{str(c.get('desc'))[:24]}")
+    return 0
+
+
+def do_remove(cfg, clip_id: str, keep_file: bool) -> int:
+    """撤销一次导入（记录 + 规范化产物）。原始素材不动。"""
+    idx_path = clips.index_path(cfg)
+    idx = clips.load_index(idx_path)
+    rec = next((c for c in idx.get("clips", []) if str(c.get("id")) == clip_id), None)
+    if rec is None:
+        print(f"✗ 素材库里没有 {clip_id}")
+        return 3
+    clips.remove_clip(idx, clip_id)
+    clips.save_index(idx_path, idx)
+    print(f"✓ 已从索引移除：{clip_id}（剩 {len(idx['clips'])} 条）")
+    if not keep_file:
+        p = clip_path(cfg, rec)
+        if p.exists():
+            p.unlink()
+            print(f"· 规范化产物已删除：{p.relative_to(ROOT)}")
+    return 0
+
+
+def do_check(cfg) -> int:
+    idx_path = clips.index_path(cfg)
+    idx = clips.load_index(idx_path)
+    items = idx.get("clips", [])
+    print(f"体检 {len(items)} 条…\n")
+    problems = 0
+    for c in items:
+        p = clip_path(cfg, c)
+        if not p.exists():
+            print(f"  ✗ {c.get('id')}：文件不在（{c.get('file')}）")
+            problems += 1
+            continue
+        info = clips.probe(p)
+        bad = []
+        if info.get("has_audio"):
+            bad.append("还带音轨")
+        if float(c.get("dur") or 0) > float(cfg.clips.get("max_seconds", 10)) + 0.01:
+            bad.append(f"时长 {c.get('dur')}s 超上限")
+        if not str(c.get("title") or "").strip():
+            bad.append("缺片源名（发布举证要用）")
+        if bad:
+            print(f"  ✗ {c.get('id')}：{'；'.join(bad)}")
+            problems += 1
+    print(f"\n{'✓ 全部合格' if not problems else f'共 {problems} 条有问题'}")
+    return 1 if problems else 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="导入影视切片素材（规范化 + 去音轨 + 登记）")
+    ap.add_argument("--file", help="源文件（人工剪好的 mp4）")
+    ap.add_argument("--id", help="素材 id，检索与槽位绑定的键，如 sg_caocao_01")
+    ap.add_argument("--title", default="", help="片源名，如 三国演义")
+    ap.add_argument("--year", default="", help="片源年份，如 1994")
+    ap.add_argument("--people", default="", help="人物，逗号分隔，如 曹操,荀彧")
+    ap.add_argument("--era", default="", help="年代，如 东汉末")
+    ap.add_argument("--topic", default="", help="题材，逗号分隔，如 三国,官渡")
+    ap.add_argument("--desc", default="", help="一句话描述，如 横槊赋诗前的特写")
+    ap.add_argument("--note", default="", help="备注")
+    ap.add_argument("--slots", default="", help="绑定的槽位，逗号分隔，如 s04_sh1,s11_sh2")
+    ap.add_argument("--rights", default="", help="引用说明（留档用，可留空自动生成）")
+    ap.add_argument("--in", dest="in_", default="", help="起点时间码，如 12:30")
+    ap.add_argument("--out", default="", help="终点时间码，如 12:38")
+    ap.add_argument("--force", action="store_true", help="同 id 覆盖")
+    ap.add_argument("--list", action="store_true", help="列出素材库")
+    ap.add_argument("--check", action="store_true", help="体检素材库")
+    ap.add_argument("--remove", metavar="ID", help="撤销一次导入（删记录 + 规范化产物）")
+    ap.add_argument("--keep-file", action="store_true", help="配合 --remove：保留规范化产物")
+    a = ap.parse_args()
+    cfg = load_config()
+    if a.list:
+        return do_list(cfg)
+    if a.check:
+        return do_check(cfg)
+    if a.remove:
+        return do_remove(cfg, a.remove, a.keep_file)
+    if not a.file or not a.id:
+        ap.print_help()
+        print("\n至少要给 --file 和 --id（或 --list / --check）")
+        return 2
+    return do_import(a, cfg)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

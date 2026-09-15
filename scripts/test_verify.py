@@ -687,6 +687,100 @@ def test_cover() -> None:
     src.unlink(missing_ok=True)
 
 
+def test_clip_index() -> None:
+    """素材库索引：登记、去重、多维检索、合规配额。"""
+    print("\n[素材库 clips.add_clip / search / check_quota]")
+    from hsg import clips
+
+    idx = clips.empty_index()
+    check("空索引结构", sorted(idx.keys()), ["clips", "version"])
+    rec = clips.add_clip(idx, {"id": "sg_caocao_01", "file": "norm/sg_caocao_01.mp4",
+                               "title": "三国演义", "year": 1994, "people": "曹操",
+                               "era": "东汉末", "topic": "三国", "dur": 8.5,
+                               "desc": "横槊赋诗前的特写"})
+    check_true("登记一条（字符串标签切成列表）",
+               rec is not None and rec.get("people") == ["曹操"], f"→ {rec}")
+    check("id 重复被拦下",
+          clips.add_clip(idx, {"id": "sg_caocao_01", "file": "x.mp4"}), None)
+    check("缺 file 被拦下", clips.add_clip(idx, {"id": "sg_x"}), None)
+    clips.add_clip(idx, {"id": "sg_liubei_01", "file": "norm/sg_liubei_01.mp4",
+                         "title": "三国演义", "people": ["刘备"], "era": "东汉末",
+                         "topic": ["三国"], "dur": 7.0})
+    check("按人物检索", [c["id"] for c in clips.search(idx, people=["曹操"])],
+          ["sg_caocao_01"])
+    check("多人是任一命中", len(clips.search(idx, people=["曹操", "刘备"])), 2)
+    check("按年代检索", len(clips.search(idx, era="东汉末")), 2)
+    check("年代不匹配为空", clips.search(idx, era="唐代"), [])
+    check("维度之间是 AND", len(clips.search(idx, people=["曹操"], era="唐代")), 0)
+    check("按题材检索", len(clips.search(idx, topic=["三国"])), 2)
+    check("按描述文本检索", [c["id"] for c in clips.search(idx, text="横槊")],
+          ["sg_caocao_01"])
+    check("空条件返回全部", len(clips.search(idx)), 2)
+    check("按槽位检索（还没绑槽位时为空）", clips.search(idx, slot="s04_sh1"), [])
+    check("删掉一条", clips.remove_clip(idx, "sg_caocao_01") and len(idx["clips"]), 1)
+
+    # ---- 合规配额 ----
+    cfg = load_config()
+    check("配额内无告警",
+          clips.check_quota(cfg, 100.0, [{"id": "a", "dur": 5.0}, {"id": "b", "dur": 5.0}]), [])
+    bad = clips.check_quota(cfg, 100.0, [{"id": "long", "dur": 25.0}])
+    check_true("单段超限被拦下", any("单段上限" in x for x in bad), f"→ {bad}")
+    heavy = clips.check_quota(cfg, 30.0, [{"id": "a", "dur": 8.0}, {"id": "b", "dur": 8.0}])
+    check_true("占比超限被拦下", any("占比" in x for x in heavy), f"→ {heavy}")
+    check("占比算得对（16/30 = 53%）",
+          round(clips.share_of(30.0, [{"id": "a", "dur": 8.0}, {"id": "b", "dur": 8.0}]), 2), 0.53)
+
+    # ---- 配置里的路径键必须**真的被读**（否则就是假开关，audit_config 会标出来）----
+    alt = load_config()
+    check_true("clips.dir 生效", clips.clip_dir(alt).as_posix().endswith("data/clips"),
+               f"→ {clips.clip_dir(alt)}")
+    check_true("clips.index 生效",
+               clips.index_path(alt).as_posix().endswith("data/clips/index.json"),
+               f"→ {clips.index_path(alt)}")
+    alt.clips["index"] = "data/tmp/alt_index.json"
+    check_true("改配置真的会换路径（不是硬编码）",
+               clips.index_path(alt).as_posix().endswith("data/tmp/alt_index.json"),
+               f"→ {clips.index_path(alt)}")
+
+
+def test_clip_normalize() -> None:
+    """素材规范化：统一规格、**剥掉音轨**、截到时长上限（真跑 ffmpeg，零 API）。"""
+    print("\n[素材库 clips.normalize_clip / probe]")
+    from hsg import clips, video
+
+    tmp = ROOT / "data/tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    src, dest = tmp / "clip_src_test.mp4", tmp / "clip_norm_test.mp4"
+    broken = tmp / "clip_broken_test.mp4"
+    # 造一条 14 秒、带音轨、1280x720@25 的"人工剪好的素材"
+    video.run_ffmpeg(["-f", "lavfi", "-i", "testsrc=size=1280x720:rate=25:duration=14",
+                      "-f", "lavfi", "-i", "sine=frequency=440:duration=14",
+                      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                      "-shortest", str(src)], cwd=tmp, desc="test_clip_src")
+    before = clips.probe(src)
+    check_true("测试素材本身带音轨（否则这条测试没意义）",
+               bool(before.get("has_audio")), f"→ {before}")
+    cfg = load_config()
+    clips.normalize_clip(src, dest, cfg.clips.get("spec") or {},
+                         float(cfg.clips.get("max_seconds", 10)))
+    after = clips.probe(dest)
+    check("规范化后分辨率统一为 1920x1080", [after["width"], after["height"]], [1920, 1080])
+    check("规范化后帧率统一为 30", str(after["fps"]).split("/")[0], "30")
+    check_true("音轨已被剥掉", not after.get("has_audio"), f"→ {after}")
+    check_true("时长被截到 10 秒上限内（输入 14 秒）",
+               9.5 < after["duration"] <= 10.1, f"→ {after['duration']:.2f}s")
+
+    # 损坏素材必须抛错，不能静默产出残废文件
+    broken.write_bytes(b"not a video at all")
+    try:
+        clips.normalize_clip(broken, tmp / "clip_should_not_exist.mp4", {}, 10)
+        check_true("损坏素材应当抛错", False, "→ 没有抛错")
+    except video.FFmpegError:
+        check_true("损坏素材抛 FFmpegError", True)
+    for f in (src, dest, broken, tmp / "clip_should_not_exist.mp4"):
+        f.unlink(missing_ok=True)
+
+
 def test_playlist_bgm() -> None:
     """按章节交替 BGM：区间换算、降级路径、有声区间判定。
 
@@ -929,6 +1023,8 @@ def main() -> int:
     test_renumber_and_feedback()
     test_tts_speed_plumbing()
     test_cover()
+    test_clip_index()
+    test_clip_normalize()
     test_playlist_bgm()
     test_scene_kinds()
     test_scene_query_translation()

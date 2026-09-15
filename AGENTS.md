@@ -93,7 +93,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（203 项，不调 API）
+run.bat test                              :: 零成本回归测试（227 项，不调 API）
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
@@ -103,7 +103,7 @@ python scripts\rerender.py                :: 复用文稿+语音，只重做配�
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
 
-**改完代码先跑 `run.bat test`**（203 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（227 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -149,6 +149,17 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
        阈值取中位数 60% 而不是 50%：50% 会把已衰减的尾段也算进"有声"，交叉淡化处会软塌。
     验收：拼完扫 1 秒窗 RMS 包络，**静音洞必须为 0**
     （脚本 `data/tmp/verify_playlist_bed.py`，0 API 成本）。
+11. **影视切片素材的合规硬线不能放宽**（`clips` 段配置，见
+    `docs/plans/2026-09-15-历史解说视频v1-影视切片.md`）：
+    单段 ≤ `clips.max_seconds`（默认 10s）、成片里切片总时长占比 ≤ `clips.max_share`
+    （默认 45%）、导入强制 `-an` 去音轨**并在入库前再验一次**（`clips.normalize_clip`
+    发现产物带音轨会直接抛错拒绝，不靠"我记得加了 -an"）、
+    每条素材必须记 `title`/`year` 等来源字段（发布前要出「素材出处清单」举证）。
+12. **多镜头分镜禁止把语音挂在第一个镜头段上。**
+    现有结构是「每个分镜片段自带语音」，一个分镜拆成 N 个镜头后，语音挂在第一段
+    会被 `-t 镜头时长` **截断，旁白直接被吃掉**。正确路径：
+    各镜头编码为无声段 → concat 成场景段 → `video.attach_audio` 贴回整条语音。
+    （该路径在 T6 实现完成之前，不要手写多镜头。）
 
 ---
 
