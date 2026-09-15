@@ -260,3 +260,29 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
 - **不要删 `data/` 下的产物、调试脚本、旧版成片**（用户明确要求：保留调试脚本和旧产物）。
 - **不要 push 任何远端**，本项目没有远端。
 - 不要为了「干净」批量重命名或移动已有文件；新增文件可以，改动现有文件名要先问。
+
+---
+
+## 8. 提交与文档约定（用户 2026-09-15 明确要求）
+
+**git 提交信息只写一句话**，说清这一轮干了什么就够，**不要把改动清单塞进 commit message**。
+
+```bat
+:: 对
+git commit -m "选题改成两级：故事类型 + 标题与描述"
+git commit -m "docs: README 同步到当前状态"
+
+:: 错（这种十几行的提交说明没人会在 git log 里读）
+git commit -m "选题改成两级\n\n- 新增 STORY_TYPES…\n- pick 支持 type_filter…\n…"
+```
+
+**详细改动一律追加到 `README.md` 末尾的「## 10. 更新记录」顶部**（最新在上），
+每条写清：改了什么、**为什么**这么改、踩到的坑、验证数据（测试项数、实测数字）。
+提交前先写更新记录，再提交。
+
+为什么：`git log` 要能一眼扫过去；而「为什么这么改」对后面维护的人（包括 AI）很值钱，
+放 commit message 里等于埋掉，放 README 里才找得到。
+
+⚠️ 用 `git commit -m` 时别在消息里夹半角引号/换行（Windows 下 shell 会截断，报
+`error: unknown non-ascii option in string`）；长消息用消息文件 `git commit -F <文件>`。
+本项目就踩过。
