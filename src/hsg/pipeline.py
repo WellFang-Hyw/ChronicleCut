@@ -19,6 +19,7 @@ from . import clips as clips_mod
 from . import edl as edl_mod
 from . import frames
 from . import history as history_mod
+from . import topics
 from . import images as images_mod
 from . import media, shotvideo, tts as tts_mod, verify, video
 from .config import ApiKeys, Config, ensure_dirs, get_channel, provider_banner
@@ -246,6 +247,8 @@ def run(
     cfg: Config,
     topic: str,
     *,
+    topic_type: str = "",
+    topic_desc: str = "",
     keys: ApiKeys | None = None,
     do_images: bool = True,
     do_video: bool = True,
@@ -287,7 +290,16 @@ def run(
     stats = {"rule_fail": 0, "rule_warn": 0, "audit_issues": 0, "regenerated_chapters": []}
     regenerated: set[int] = set()
     with LLM(cfg, keys) as llm:
-        story = build_outline(topic, cfg, llm, material)
+        # ---- 选题的两级：类型（L1）+ 这一期讲什么（L2）
+        # 池子里挑的题自带两级；手填的 -t 没有 → 在这里补（判类型 + 生成描述）。
+        # 实现在 topics.fill_levels（cmd_plan 也走它，免得两条路长歪）；
+        # 补不上也能走：内部吞异常退回原值。
+        filled = topics.fill_levels(
+            topics.Topic(title=topic, type=topic_type, desc=topic_desc), cfg, llm)
+        topic_type, topic_desc = filled.type, filled.desc      # 日志由 build_outline 打
+
+        story = build_outline(topic, cfg, llm, material,
+                              topic_type=topic_type, topic_desc=topic_desc)
 
         # ---------- 2.5 锚点核查（写稿前把编造的出处挡掉）
         stats["fact_audit"] = verify.audit_facts(story, cfg, llm)
@@ -819,6 +831,9 @@ def write_script(story: Story, cfg: Config, path: Path, total: float) -> Path:
         f"# {story.title}",
         "",
         f"- 主题：{story.topic}",
+        f"- 故事类型：{story.topic_type or '（未分类）'}"
+        f"{('　' + story.topic_type_desc) if story.topic_type_desc else ''}",
+        f"- 这一期讲什么：{story.topic_desc or '（未生成）'}",
         f"- 本期问题：{story.angle_question or '（事件型，无提问）'}",
         f"- 年代：{story.period}（{story.period_start} ~ {story.period_end}）",
         f"- 语音总时长：{total:.1f} 秒（{total / 60:.2f} 分钟）",
@@ -869,6 +884,11 @@ def write_metadata(story: Story, cfg: Config, path: Path, rows: list[dict], extr
     data = {
         "title": story.title,
         "topic": story.topic,
+        # 选题两级：类型（L1 高层描述）+ 与故事相关性最高的描述（L2）。
+        # 必须落进 metadata：agent 阶段 2、make_needs、素材需求清单都从它读。
+        "topic_type": story.topic_type,
+        "topic_type_desc": story.topic_type_desc,
+        "topic_desc": story.topic_desc,
         "angle_question": story.angle_question,
         "angle_mode": str(cfg.story.get("angle_mode") or "small"),
         "period": story.period,

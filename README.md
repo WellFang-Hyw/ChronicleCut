@@ -57,7 +57,7 @@ historical_story_gen/
 │   ├── textfmt.py         口播清洗（去 markdown/来源词、日期不补零、折行修正）
 │   ├── llm.py             OpenAI 兼容的 LLM 客户端（JSON 模式 + 截断自动重试）
 │   ├── material.py        素材检索（Bing 摘要，作人名/年份锚点）
-│   ├── topics.py          选题池（默认随机挑）
+│   ├── topics.py          选题池（两级：故事类型 + 标题与描述，可按类型挑）
 │   ├── outline.py         阶段 A：分章大纲
 │   ├── writer.py          阶段 B：逐章写稿 + 长度自适应扩写/精简
 │   ├── verify.py          史实校验（规则层 + LLM 审校 + 锚点核查 + 复检闸门）
@@ -76,7 +76,7 @@ historical_story_gen/
 │   └── cli.py             命令行
 ├── scripts/
 │   ├── smoke_video.py     零 LLM 的媒体链路冒烟测试 ← 媒体出问题先跑它
-│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导/切片/需求清单/剪辑表/标注，332 项）
+│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导/切片/需求清单/剪辑表/标注/两级选题，361 项）
 │   ├── probe_clean_images.py  零成本配图专项探测（clean 策略下的命中率/版权/年代）
 │   ├── rerender.py        从已有 metadata 重渲染（复用文稿和语音，只换配图/画面）
 │   ├── check_layout.py    量一帧里标题带和字幕带是否重叠（不靠肉眼）

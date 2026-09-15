@@ -83,8 +83,11 @@ def _orientations(cfg, arg: str) -> list[str]:
     return [arg]
 
 
-def _resolve_topic(cfg, args) -> str:
+def _resolve_topic(cfg, args):
     """定题材：显式指定先查重；否则从池子里挑没做过的；池子挑空了让模型出个新题。
+
+    返回的是 `topics.Topic`（**两级**：类型 + 标题 + 这一期讲什么）。
+    手填 `-t` 的题没有类型和描述 → 由 pipeline 在模型上下文里补（判类型 + 生成描述）。
 
     这是「不要有重复的故事」的落点 —— 生成记录（data/history.json）是查重依据。
     """
@@ -105,16 +108,25 @@ def _resolve_topic(cfg, args) -> str:
                 log.error("  · 确实要重做：加 --allow-duplicate")
                 raise SystemExit(2)
             log.warning("%s  —— 已指定 --allow-duplicate，继续", detail)
-        return args.topic
+        return topics.Topic(title=args.topic)
 
     recs = history.load(cfg)
     mode = str(cfg.story.get("angle_mode") or "small")
+    recent = topics.used_types(recs)          # 最近几期的类型：优先避开，别连着做同一类
     t = topics.pick(seed=getattr(args, "seed", None),
                     is_used=lambda x: history.is_used(cfg, x),
-                    mode=mode)
+                    mode=mode,
+                    type_filter=str(getattr(args, "type", "") or ""),
+                    recent_types=recent)
     if t:
-        log.info("自动选题：%s（切入方式 %s；已生成 %d 期，本次已避开做过的）",
-                 t, "小切口" if mode == "small" else "事件式", len(recs))
+        log.info("自动选题：%s", t.title)
+        log.info("  故事类型：%s（%s）", t.type or "未分类", t.type_desc or "—")
+        log.info("  这一期讲什么：%s", t.desc or "（待生成）")
+        log.info("  切入方式 %s；已生成 %d 期，本次已避开做过的"
+                 "（类型避开最近 %d 期）",
+                 "小切口" if mode == "small" else "事件式", len(recs), len(recent))
+        if recent and t.type not in recent:
+            log.info("  （最近做过：%s —— 这次换了一路）", "、".join(recent))
         return t
 
     log.warning("选题池里的 %d 个题材都做过了，让模型出一个新题", len(topics.pool_for(mode)))
@@ -122,12 +134,13 @@ def _resolve_topic(cfg, args) -> str:
     with LLM(cfg, ApiKeys.from_env()) as llm:
         for attempt in range(1, 4):
             t = topics.propose(cfg, llm, avoid, mode=mode)
-            if not history.find_duplicate(cfg, t):
-                log.info("模型出的新题：%s", t)
+            if not history.find_duplicate(cfg, t.title):
+                log.info("模型出的新题：%s", t.title)
+                log.info("  故事类型：%s　讲什么：%s", t.type or "未分类", t.desc or "—")
                 return t
-            log.warning("第 %d 次出的题材与已有记录相似，重出：%s", attempt, t)
-            avoid.append(t)
-    log.warning("模型三次都出到相似题材，就用最后一个：%s", t)
+            log.warning("第 %d 次出的题材与已有记录相似，重出：%s", attempt, t.title)
+            avoid.append(t.title)
+    log.warning("模型三次都出到相似题材，就用最后一个：%s", t.title)
     return t
 
 
@@ -141,7 +154,8 @@ def cmd_run(cfg, args) -> int:
     topic = _resolve_topic(cfg, args)
     try:
         res = run(
-            cfg, topic, keys=keys,
+            cfg, topic.title, keys=keys,
+            topic_type=topic.type, topic_desc=topic.desc,
             do_images=not args.no_images,
             do_video=not args.no_video,
             orientations=_orientations(cfg, args.orientation),
@@ -209,10 +223,14 @@ def cmd_plan(cfg, args) -> int:
     keys = ApiKeys.from_env()
     assert_text_provider(cfg)
     topic = _resolve_topic(cfg, args)
-    material, mat_meta = fetch_material(topic, [], cfg, cfg.paths.get_path("material_dir"))
+    material, mat_meta = fetch_material(topic.title, [], cfg,
+                                        cfg.paths.get_path("material_dir"))
 
     with LLM(cfg, keys) as llm:
-        story = build_outline(topic, cfg, llm, material)
+        # 两级补全（判类型 + 生成描述）；日志由 build_outline 统一打，别在这里重复
+        filled = topics.fill_levels(topic, cfg, llm)
+        story = build_outline(topic.title, cfg, llm, material,
+                              topic_type=filled.type, topic_desc=filled.desc)
         audit_facts(story, cfg, llm)          # 锚点核查（和正式流程一致）
         story = write_all(story, cfg, llm)
         report(rule_check(story, cfg))
@@ -236,8 +254,11 @@ def cmd_plan(cfg, args) -> int:
     stem = f"{datetime.now().strftime('%Y%m%d')}_plan"
     log.info("预估语音时长 %.2f 分钟（%.0f 秒）", est / 60, est)
     log.info("稿件：%s", write_script(story, cfg, out / f"{stem}_脚本.md", est))
+    # ⚠️ 这里给的是 topic.title（字符串）：write_metadata 的 extra 会被 json.dumps，
+    #    传 Topic 对象会直接 TypeError（踩过 —— 因为写文件在最后一步，报错时文件没写坏）
     log.info("元数据：%s", write_metadata(story, cfg, out / f"{stem}_metadata.json", rows,
-                                         {"topic": topic, "material": mat_meta, "plan_only": True}))
+                                         {"topic": topic.title, "material": mat_meta,
+                                          "plan_only": True}))
     return 0
 
 
@@ -403,13 +424,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hsg", description="历史小故事：AI 写稿 + TTS 配音 + 配图字幕 → 成片")
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "plan", "probe-tts", "probe-images", "voices",
-                            "smoke", "smoke-clips", "test", "history", "agent"],
+                            "smoke", "smoke-clips", "test", "history", "agent", "topics"],
                    help="默认 run")
     p.add_argument("--config", help="指定配置文件（默认项目根 config.yaml）")
 
     g = p.add_argument_group("内容")
     g.add_argument("-t", "--topic", help="故事主题；不填则从选题池随机挑（自动跳过做过的）")
     g.add_argument("--seed", type=int, help="随机选题的种子（复现同一题材）")
+    g.add_argument("--type", help="按故事类型挑题（如「行旅与驿传」；用 run.bat topics 看全部类型）")
     g.add_argument("--allow-duplicate", action="store_true",
                    help="允许重做已生成过的题材（默认会拦下并提示）")
     g.add_argument("--minutes", type=float, help="目标总时长（分钟），默认 7")
@@ -449,6 +471,42 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def cmd_topics(cfg, args) -> int:
+    """打印两级选题池：类型（高层描述）→ 具体选题（标题 + 这一期讲什么）。
+
+    为什么要有这条命令：选题是两级的，人得能先看见「有哪几路故事」再决定挑哪路。
+    只靠随机抽题，你根本不知道池子里还有什么。
+    """
+    from . import history, topics as topics_mod
+
+    mode = str(cfg.story.get("angle_mode") or "small")
+    want = str(getattr(args, "type", "") or "")
+    if want:
+        if want not in topics_mod.STORY_TYPES:
+            log.error("没有这个类型：%s", want)
+            log.error("  可选：%s", "、".join(topics_mod.all_types()))
+            return 2
+        items = [t for t in topics_mod.pool_for(mode) if t.type == want]
+        print(f"\n■ {want}　{topics_mod.type_desc(want)}\n")
+        for t in items:
+            print(f"    · {t.title}")
+            if t.desc:
+                print(f"      {t.desc}")
+        print()
+    else:
+        print()
+        print(topics_mod.render_pool(mode))
+        print("（只看某一类：run.bat topics --type \"类型名\"）")
+
+    used = [str(r.get("topic_type") or "") for r in history.load(cfg)]
+    used = [t for t in used if t]
+    if used:
+        print(f"最近做过的类型：{'、'.join(used[-6:])}")
+        print("选题时会优先避开这些（避免连着做同一路）；指定类型用 --type。")
+    print("指定类型挑题：run.bat --type \"行旅与驿传\"")
+    return 0
+
+
 def cmd_agent(cfg, args) -> int:
     """生产线编排：阶段闸门 + AI 剪辑决策 + 自检（见 hsg/agent.py）。"""
     from .agent import main_agent
@@ -466,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe-images": cmd_probe_images, "voices": cmd_voices,
         "smoke": cmd_smoke, "smoke-clips": cmd_smoke_clips,
         "test": cmd_test, "history": cmd_history,
-        "agent": cmd_agent,
+        "agent": cmd_agent, "topics": cmd_topics,
     }
     return handlers[args.command](cfg, args)
 

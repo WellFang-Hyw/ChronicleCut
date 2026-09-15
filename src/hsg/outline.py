@@ -147,7 +147,16 @@ EVENT_STRUCTURE = """【结构建议】
 · 章节标题要像纪录片分集标题，不要「第一章 背景介绍」这种机械写法"""
 
 
-def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "") -> Story:
+def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "",
+                  *, topic_type: str = "", topic_desc: str = "") -> Story:
+    """产出分章大纲。
+
+    `topic_type` / `topic_desc` 是选题的**两级**信息（类型 + 这一期讲什么），
+    会进大纲提示词当语境、并原样落到 Story 上（再进 metadata 与生成记录）。
+    为什么值得单独喂：同一句话在不同类型下该往哪边展开是不同的 ——
+    「夜里的城」按「生计与物价」写是宵禁下的生活成本，按「刑狱与流放」写
+    就变成违规的代价。给了类型，大纲不会两边摇摆。
+    """
     st = cfg.story
     small = mode_of(cfg) == "small"
     n = int(st.chapters)
@@ -158,10 +167,22 @@ def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "") -> Stor
         if material.strip() else "\n"
     )
 
+    brief = ""
+    if topic_type or topic_desc:
+        brief = f"\n【故事类型】{topic_type or '未分类'}"
+        if topic_type:
+            from .topics import type_desc as _type_desc
+            td = _type_desc(topic_type)
+            if td:
+                brief += f"（{td}）"
+        if topic_desc:
+            brief += f"\n【这一期讲什么】{topic_desc}"
+        brief += "\n"
+
     if small:
         ask = f"""请为下面这个主题写一份适合讲 5-10 分钟的分章大纲。
 
-【主题】{topic}
+【主题】{topic}{brief}
 {mat}
 【本篇要求】
 · 先把它凝练成**一个具体的日常问题**（填进 angle_question），整期都在回答它
@@ -172,7 +193,7 @@ def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "") -> Stor
     else:
         ask = f"""请为下面这个主题写一份适合讲 5-10 分钟的分章大纲。
 
-【主题】{topic}
+【主题】{topic}{brief}
 {mat}
 【结构要求】
 · 共 {n} 章，每章口播约 {per} 秒（按中文播报 {st.chars_per_second} 字/秒算，约 {int(per * float(st.chars_per_second))} 字）
@@ -214,8 +235,12 @@ def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "") -> Stor
     if not chapters:
         raise ValueError("大纲里没有章节，模型输出异常")
 
+    from .topics import STORY_TYPES
     story = Story(
         topic=topic,
+        topic_type=topic_type or "",
+        topic_type_desc=STORY_TYPES.get(topic_type, ""),
+        topic_desc=topic_desc or "",
         title=str(data.get("title") or topic).strip(),
         angle_question=str(data.get("angle_question") or "").strip(),
         hook=str(data.get("hook") or "").strip(),
@@ -225,6 +250,10 @@ def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "") -> Stor
         chapters=chapters,
         material=material,
     )
+    if story.topic_type:
+        log.info("故事类型：%s（%s）", story.topic_type, story.topic_type_desc or "—")
+    if story.topic_desc:
+        log.info("这一期讲什么：%s", story.topic_desc)
     log.info("大纲完成：《%s》%d 章，预计 %.1f 分钟",
              story.title, len(chapters), sum(c.seconds for c in chapters) / 60)
     if story.angle_question:

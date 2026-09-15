@@ -19,6 +19,8 @@
 
 ## 2. 硬性约定（不要自作主张改）
 
+> 选题是**两级**的（故事类型 + 标题与描述），见护栏 22。
+
 ### 2.1 文本内容只用 DeepSeek
 
 MiniMax **只**用于语音（TTS 与音色克隆）。这条有三层锁，改配置也绕不过去：
@@ -93,10 +95,12 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（332 项，不调 API）
+run.bat test                              :: 零成本回归测试（361 项，不调 API）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
+run.bat topics                            :: 看两级选题池（类型 → 标题+讲什么）
+run.bat --type "行旅与驿传"                :: 指定故事类型挑题
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
 python scripts\tts_preview.py --script <脚本.md> --voice A --voice B
 python scripts\audit_config.py            :: 配置审计（动了 config.yaml 之后跑一下）
@@ -114,7 +118,7 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
 需求清单必须排在剪素材**之前**：剪素材是最慢的人工环节，先剪后配会剪一堆用不上的。
 架构与分工见 `docs\Agent应用架构.md`。
 
-**改完代码先跑 `run.bat test`**（332 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（361 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -219,6 +223,22 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
     有多少不透明像素；`scripts/smoke_clips.py` 里还有一条「竖屏中间清晰带的高频能量
     必须显著高于上下模糊衬底」的判据（实测 5.8×）。
     为什么不能靠看图：合成素材是大色块时，模糊与否**长得一模一样**（看图什么都看不出来）。
+22. **选题是两级的，两级都必须齐**（`hsg/topics.py`）：
+    L1 = **故事类型**（`STORY_TYPES` 里的一句高层描述，是**受控词表**，不许自由发挥）；
+    L2 = **详细标题 + 与这个故事相关性最高的描述**（`Topic.desc`）。
+    · 类型不是装饰：它决定 `pick()` 怎么避开「连着做同一路」、
+      `--type` 怎么按类挑题、大纲提示词往哪边展开
+      （「夜里的城」按「生计与物价」写是宵禁下的生活成本，按「刑狱与流放」写
+      就变成违规的代价 —— 不给类型，大纲两边摇摆）。
+    · 两级都要落到产物里：`Story.topic_type/topic_type_desc/topic_desc` →
+      metadata、`_脚本.md` 头部、`data/history.json`（记录里没有类型，
+      下次选题就无法避开这一类）。
+    · **`desc` 里不许写具体数字、年代或结论** —— 那些要由写稿阶段的史实校验兜住；
+      写进选题池就等于把一个未核实的说法固化进长期资产，错了会一直传下去。
+    · 补两级只走 `topics.fill_levels()` 一个实现（`pipeline.run` 与 `cli.cmd_plan`
+      都调它）—— 两条路各写一份，迟早一个补类型另一个不补，产物就对不上。
+    · ⚠️ `Topic` 的位置参数顺序是 **(类型, 标题, 描述)**：池子里 60 多条都是这么传的，
+      改字段顺序会让整池数据错位（踩过：类型被塞进标题，池子打出来是空的）。
 
 ---
 

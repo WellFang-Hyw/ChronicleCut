@@ -68,10 +68,15 @@ UNKNOWN_TYPE = "未分类"
 # ---------------------------------------------------------------- L2 选题条目
 @dataclass(frozen=True)
 class Topic:
-    """一个选题 = L1 类型 + L2 标题与描述。"""
-    title: str                  # 详细标题（原来那个字符串）
+    """一个选题 = L1 类型 + L2 标题与描述。
+
+    ⚠️ 位置参数顺序是 **(类型, 标题, 描述)** —— 按两级从高到低排的阅读顺序。
+    池子里 60 多条都是这么位置传参的，改字段顺序会让整池数据错位
+    （这个坑当场踩过：类型被塞进标题、标题被当成类型，池子打出来是空的）。
+    """
     type: str = ""              # L1 故事类型（STORY_TYPES 的键）
-    desc: str = ""              # 与这个故事相关性最高的描述（可由 LLM 补）
+    title: str = ""             # L2 详细标题（原来那个字符串）
+    desc: str = ""              # L2 与这个故事相关性最高的描述（可由 LLM 补）
 
     @property
     def type_desc(self) -> str:
@@ -229,9 +234,22 @@ def pool_for(mode: str) -> list[Topic]:
 
 
 def used_types(records: list[dict], last: int = 4) -> list[str]:
-    """最近几期做过的类型（用来让选题避开连着做同一类）。"""
-    out = [str(r.get("topic_type") or "") for r in records[-max(0, last):]]
-    return [t for t in out if t]
+    """最近几期做过的类型（用来让选题避开连着做同一类）。
+
+    老记录没有 `topic_type` 字段（这个字段是后加的）→ 按标题回查池子补类型，
+    回查不到再用关键词规则猜。
+    为什么要补：不补的话「避开最近类型」这个功能要等所有期重跑一遍才生效，
+    在那之前它一直是个空转的假开关（实测：日志里打「类型避开最近 0 期」）。
+    """
+    out: list[str] = []
+    for r in records[-max(0, last):]:
+        t = str(r.get("topic_type") or "").strip()
+        if not t:
+            title = str(r.get("topic") or r.get("title") or "")
+            t = topic_of(title).type or (_guess_type(title) if title else "")
+        if t:
+            out.append(t)
+    return out
 
 
 def pick(seed: int | None = None, is_used=None, mode: str = "small",
@@ -418,6 +436,23 @@ def classify(title: str, cfg, llm) -> str:
         except Exception:  # noqa: BLE001
             pass
     return _guess_type(title)
+
+
+def fill_levels(topic: Topic, cfg, llm) -> Topic:
+    """补齐选题的两级：类型（没有就判一个）+ 描述（没有就生成一条）。
+
+    这是**唯一**实现 —— `pipeline.run`（正式出片）和 `cli.cmd_plan`（只写稿）
+    都走它，免得两条路慢慢长歪（一个补类型另一个不补，产物就对不上了）。
+
+    任何一步失败都退回原值：两级是给写稿更好的语境，不能因为它阻断出片。
+    """
+    ttype = str(topic.type or "")
+    tdesc = str(topic.desc or "")
+    if not ttype:
+        ttype = classify(topic.title, cfg, llm)
+    if not tdesc:
+        tdesc = ensure_desc(Topic(title=topic.title, type=ttype), cfg, llm).desc
+    return Topic(title=topic.title, type=ttype, desc=tdesc)
 
 
 def render_pool(mode: str = "small") -> str:

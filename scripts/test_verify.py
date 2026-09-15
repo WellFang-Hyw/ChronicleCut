@@ -299,7 +299,8 @@ def test_angle_mode() -> None:
     check("small 模式：大纲 schema 有 angle_question", "angle_question" in outline.schema_for(cfg), True)
     check("small 模式：结构建议含「一层层回答」", "一层层回答" in outline.SMALL_STRUCTURE, True)
     nxt = topics.pick(seed=5, mode="small")
-    check_true("small 模式选题来自小切口池", nxt in topics.TOPICS_ANGLE)
+    check_true("small 模式选题来自小切口池",
+               nxt is not None and nxt.title in topics.TOPICS_ANGLE, f"→ {nxt}")
     check_true("小切口池与事件池不重叠",
                not (set(topics.TOPICS_ANGLE) & set(topics.TOPICS_EVENT)))
 
@@ -307,12 +308,133 @@ def test_angle_mode() -> None:
     check("event 模式：切回事件式提示词", "来龙去脉" in outline.system_for(cfg), True)
     check("event 模式：schema 里没有 angle_question", "angle_question" in outline.schema_for(cfg), False)
     nxt = topics.pick(seed=5, mode="event")
-    check_true("event 模式选题来自事件池", nxt in topics.TOPICS_EVENT)
+    check_true("event 模式选题来自事件池",
+               nxt is not None and nxt.title in topics.TOPICS_EVENT, f"→ {nxt}")
     check("缺省（未配置）按 small 处理", outline.mode_of(load_config()), "small")
 
     # 小切口池的主题都应该是「切口：问题」的问句形式
     bad = [t for t in topics.TOPICS_ANGLE if "：" not in t and "?" not in t and "？" not in t]
     check_true("小切口题材都带冒号或问号（提问式）", not bad)
+
+
+def test_topic_levels() -> None:
+    """两级选题：类型（L1 高层描述）+ 标题与描述（L2），以及按类型挑题。"""
+    print("\n[两级选题 topics.STORY_TYPES / Topic / pick]")
+    from hsg import topics
+
+    # ---- L1：类型表本身
+    check_true("类型表有内容", len(topics.STORY_TYPES) >= 8,
+               f"{len(topics.STORY_TYPES)} 类")
+    check_true("每类都有一句高层描述（不能只有名字）",
+               all(len(v) >= 20 for v in topics.STORY_TYPES.values()),
+               f"最短 {min(len(v) for v in topics.STORY_TYPES.values())} 字")
+    check("类型描述能查出来", bool(topics.type_desc("行旅与驿传")), True)
+    check("不认识的类型 → 空描述", topics.type_desc("不存在"), "")
+
+    # ---- L2：池子条目必须两级齐全（位置参数顺序是 类型/标题/描述）
+    bad_title = [t for t in topics.ITEMS_SMALL if not t.title]
+    bad_type = [t for t in topics.ITEMS_SMALL
+                if t.type not in topics.STORY_TYPES]
+    bad_desc = [t for t in topics.ITEMS_SMALL if len(t.desc) < 15]
+    check_true("池子条目的类型都在类型表里（不是自由字符串）", not bad_type,
+               f"→ {[t.type for t in bad_type][:3]}")
+    check_true("池子条目都写了 L2 描述（不是标题的复述）", not bad_desc,
+               f"→ {[t.title for t in bad_desc][:3]}")
+    check_true("池子条目的标题不为空（字段顺序没写反）", not bad_title,
+               f"→ {[str(t)[:12] for t in bad_title][:3]}")
+    check_true("描述不是标题的复制",
+               all(t.desc.strip() != t.title.strip() for t in topics.ITEMS_SMALL))
+    check_true("每个类型下至少有一条选题（类型表不留空壳）",
+               not (set(topics.STORY_TYPES) & {t.type for t in topics.ITEMS_SMALL}
+                    ^ {t.type for t in topics.ITEMS_SMALL}),
+               f"小切口池用到的类型 {sorted({t.type for t in topics.ITEMS_SMALL})}")
+    check_true("池子里没有重复标题",
+               len({t.title for t in topics.ITEMS_SMALL + topics.ITEMS_EVENT})
+               == len(topics.ITEMS_SMALL) + len(topics.ITEMS_EVENT))
+
+    # ---- 字段顺序（踩过的坑：类型被塞进标题，池子打出来是空的）
+    one = topics.ITEMS_SMALL[0]
+    check_true("位置参数 = (类型, 标题, 描述)",
+               one.type in topics.STORY_TYPES and "：" in one.title, f"→ {one.as_dict()}")
+
+    # ---- 按类型挑题
+    got = topics.pick(seed=1, type_filter="行旅与驿传")
+    check("按类型挑题", got.type, "行旅与驿传")
+    check_true("指定的类型不存在时返回 None（不静默给别的类型）",
+               topics.pick(seed=1, type_filter="不存在的类型") is None)
+    allt = {topics.pick(seed=i).type for i in range(30)}
+    check_true("随机挑题会覆盖到多个类型", len(allt) >= 4, f"→ {sorted(allt)}")
+
+    # ---- 避开最近做过的类型（这是类型成为一等概念之后才有的能力）
+    recent = ["行旅与驿传", "生计与物价"]
+    fresh = topics.pick(seed=3, recent_types=recent)
+    check_true("优先挑近期没做过的类型", fresh.type not in recent, f"→ {fresh.type}")
+    covered = {topics.pick(seed=i, recent_types=recent).type for i in range(12)}
+    check_true("近期类型被避开（不是碰巧）", not (covered & set(recent)),
+               f"→ {sorted(covered)}")
+
+    # ---- used_types：从生成记录里取最近类型
+    recs = [{"topic_type": "行旅与驿传"}, {"topic_type": ""}, {"topic_type": "刑狱与流放"}]
+    check("used_types 取最近几期的类型（按顺序、跳过空值）",
+          topics.used_types(recs), ["行旅与驿传", "刑狱与流放"])
+    check("used_types 只看最近 N 期",
+          topics.used_types(recs, last=1), ["刑狱与流放"])
+    check("used_types：记录里没有类型字段时返回空", topics.used_types([{}]), [])
+    # 老记录（这个字段是后加的）要能按标题回查池子补出类型，
+    # 否则「避开最近类型」在重跑所有期之前一直空转
+    old_rec = [{"topic": "驿站那匹马：一封加急军报从边关到京城要跑几天？"}]
+    check("used_types：老记录按标题回查池子补类型",
+          topics.used_types(old_rec), ["行旅与驿传"])
+    guessed = topics.used_types([{"topic": "县衙大牢里到底关着谁"}])
+    check_true("used_types：池子里没有的标题用关键词规则兜底",
+               guessed == ["刑狱与流放"], f"→ {guessed}")
+
+    # ---- 出题/判类型/补描述（打桩，不花钱）
+    class _FakeLLM:
+        def __init__(self, payload):
+            self.payload = payload
+            self.calls = 0
+
+        def chat_json(self, system, user, **kw):
+            self.calls += 1
+            if isinstance(self.payload, Exception):
+                raise self.payload
+            return self.payload
+
+    cfg = load_config()
+    t = topics.propose(cfg, _FakeLLM({"type": "钱粮与税役", "title": "盐引那本账：商人怎么和官府结算？",
+                                      "desc": "从一张盐引的流转看专卖制度怎么运行。"}),
+                       avoid=[], mode="small")
+    check("出题：两级都拿到了", (t.type, bool(t.desc)), ("钱粮与税役", True))
+    t2 = topics.propose(cfg, _FakeLLM({"type": "瞎编的类型", "title": "某个新题材的两个例子细节"}),
+                        avoid=[], mode="small")
+    check_true("出题：类型不在表里时不接受（回退到关键词规则或未分类）",
+               t2.type in topics.STORY_TYPES or t2.type == topics.UNKNOWN_TYPE,
+               f"→ {t2.type}")
+    check("判类型：模型给的表内类型就被采纳",
+          topics.classify("驿站那匹马：一封加急军报要跑几天？", cfg,
+                          _FakeLLM({"type": "行旅与驿传"})), "行旅与驿传")
+    check("判类型：模型挂了退回关键词规则",
+          topics.classify("县衙大牢里吃什么", cfg, _FakeLLM(RuntimeError("boom"))), "刑狱与流放")
+    check("判类型：认不出来的归到未分类",
+          topics.classify("完全无关的一句话", cfg, _FakeLLM({"type": "没这个"})),
+          topics.UNKNOWN_TYPE)
+    filled = topics.fill_levels(topics.Topic(title="驿站那匹马：一封加急军报要跑几天？"),
+                                cfg, _FakeLLM({"desc": "一封加急公文在路上要经过什么。"}))
+    check("补两级：类型与描述都补上了",
+          (filled.type, bool(filled.desc)), ("行旅与驿传", True))
+    keep = topics.fill_levels(topics.ITEMS_SMALL[0], cfg, _FakeLLM(RuntimeError("boom")))
+    check("补两级：已有描述的原样保留（不重复花钱）",
+          keep.desc, topics.ITEMS_SMALL[0].desc)
+    no_llm = topics.fill_levels(topics.Topic(title="随便一个标题够长"), cfg, None)
+    check_true("补两级：没有 LLM 时不报错，类型落到兜底名",
+               no_llm.type in (topics.UNKNOWN_TYPE, "") and no_llm.desc == "",
+               f"→ type={no_llm.type!r}")
+
+    # ---- 选题池的可读输出（run.bat topics）
+    txt = topics.render_pool("small")
+    check_true("选题池输出含类型与高层描述", "■ 行旅与驿传" in txt and "人与物的长途移动" in txt)
+    check_true("选题池输出含 L2 标题与描述", "驿站那匹马" in txt and "换马接力" in txt)
 
 
 def test_fact_audit() -> None:
@@ -1439,6 +1561,7 @@ def main() -> int:
     test_dedupe_llm_verdict()
     test_history_roundtrip()
     test_angle_mode()
+    test_topic_levels()
     test_fact_audit()
     test_license_policy()
     test_culture_filter()
