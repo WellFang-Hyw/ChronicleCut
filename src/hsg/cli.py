@@ -96,7 +96,7 @@ def _plan_stem(title: str) -> str:
     return f"{_dt.now().strftime('%Y%m%d')}_plan_{pipeline_safe(title)}"
 
 
-def _build_topic(title: str, type_name: str = "", desc: str = ""):
+def _build_topic(title: str, type_name: str = "", desc: str = "", user=None):
     """把「手填的标题 + 指定的类型/描述」拼成 Topic。
 
     类型是**受控词表**：写错了当场报错并列出全部可选值，不要静默归到「未分类」——
@@ -105,10 +105,12 @@ def _build_topic(title: str, type_name: str = "", desc: str = ""):
     from . import topics as topics_mod
 
     t = str(type_name or "").strip()
-    if t and t not in topics_mod.STORY_TYPES:
+    known = topics_mod.all_types(user)
+    if t and t not in known:
         log.error("没有这个故事类型：%s", t)
-        log.error("  可选：%s", "、".join(topics_mod.all_types()))
+        log.error("  可选：%s", "、".join(known))
         log.error("  看全部类型与描述：run.bat topics")
+        log.error("  要新开一个类型：python scripts\\add_topic.py --type-desc \"…\" --type \"%s\" …", t)
         raise SystemExit(2)
     return topics_mod.Topic(title=str(title or "").strip(), type=t,
                             desc=str(desc or "").strip())
@@ -125,6 +127,10 @@ def _resolve_topic(cfg, args):
     from . import history, topics
     from .llm import LLM
 
+    # 用户自己制定的选题池（data/topics_user.json）—— 一条命令就能加，
+    # 见 scripts/add_topic.py。它并进内置池：能挑到、能按类型过滤、查重照样生效。
+    user = topics.load_user_pool(topics.user_pool_path(cfg))
+
     if args.topic:
         # 规则先判；规则判不出来的「换了个说法」交给模型裁定（只沾边时才真的调一次）
         with LLM(cfg, ApiKeys.from_env()) as judge:
@@ -140,17 +146,17 @@ def _resolve_topic(cfg, args):
                 raise SystemExit(2)
             log.warning("%s  —— 已指定 --allow-duplicate，继续", detail)
         built = _build_topic(args.topic, getattr(args, "topic_type", ""),
-                             getattr(args, "topic_desc", ""))
+                             getattr(args, "topic_desc", ""), user)
         if built.type:
             log.info("本期类型（手动指定）：%s（%s）", built.type,
-                     topics.type_desc(built.type) or "—")
+                     topics.type_desc(built.type, user) or "—")
         if built.desc:
             log.info("这一期讲什么（手动指定）：%s", built.desc)
         return built
 
     recs = history.load(cfg)
     mode = str(cfg.story.get("angle_mode") or "small")
-    recent = topics.used_types(recs)          # 最近几期的类型：优先避开，别连着做同一类
+    recent = topics.used_types(recs, user=user)   # 最近几期类型：优先避开，别连着做同一类
     # --type 与 --topic-type 在池子路径下是一个意思（都当类型过滤），
     # 两者都给就以 --type 为准，并提醒一声，免得以为被忽略了
     want_type = str(getattr(args, "type", "") or "") or str(getattr(args, "topic_type", "") or "")
@@ -158,7 +164,8 @@ def _resolve_topic(cfg, args):
                     is_used=lambda x: history.is_used(cfg, x),
                     mode=mode,
                     type_filter=want_type,
-                    recent_types=recent)
+                    recent_types=recent,
+                    user=user)
     if want_type and t is None:
         log.error("「%s」这一类里的选题都做过了（或类型名写错）", want_type)
         log.error("  看有哪些类型：run.bat topics　（池子挑空 → 用手填：run.bat -t \"标题\"）")
@@ -174,7 +181,8 @@ def _resolve_topic(cfg, args):
             log.info("  （最近做过：%s —— 这次换了一路）", "、".join(recent))
         return t
 
-    log.warning("选题池里的 %d 个题材都做过了，让模型出一个新题", len(topics.pool_for(mode)))
+    log.warning("选题池里的 %d 个题材都做过了，让模型出一个新题",
+                len(topics.pool_for(mode, user)))
     avoid = [r.get("topic") or "" for r in recs] + [r.get("title") or "" for r in recs]
     with LLM(cfg, ApiKeys.from_env()) as llm:
         for attempt in range(1, 4):
@@ -531,14 +539,15 @@ def cmd_topics(cfg, args) -> int:
     from . import history, topics as topics_mod
 
     mode = str(cfg.story.get("angle_mode") or "small")
+    user = topics_mod.load_user_pool(topics_mod.user_pool_path(cfg))
     want = str(getattr(args, "type", "") or "")
     if want:
-        if want not in topics_mod.STORY_TYPES:
+        if want not in topics_mod.all_types(user):
             log.error("没有这个类型：%s", want)
-            log.error("  可选：%s", "、".join(topics_mod.all_types()))
+            log.error("  可选：%s", "、".join(topics_mod.all_types(user)))
             return 2
-        items = [t for t in topics_mod.pool_for(mode) if t.type == want]
-        print(f"\n■ {want}　{topics_mod.type_desc(want)}\n")
+        items = [t for t in topics_mod.pool_for(mode, user) if t.type == want]
+        print(f"\n■ {want}　{topics_mod.type_desc(want, user)}\n")
         for t in items:
             print(f"    · {t.title}")
             if t.desc:
@@ -546,8 +555,9 @@ def cmd_topics(cfg, args) -> int:
         print()
     else:
         print()
-        print(topics_mod.render_pool(mode))
+        print(topics_mod.render_pool(mode, user))
         print("（只看某一类：run.bat topics --type \"类型名\"）")
+        print("（自己制定选题：python scripts\\add_topic.py --help）")
 
     used = [str(r.get("topic_type") or "") for r in history.load(cfg)]
     used = [t for t in used if t]

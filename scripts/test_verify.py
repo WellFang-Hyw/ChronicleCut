@@ -468,6 +468,49 @@ def test_topic_levels() -> None:
     check("手填的两级原样保留，不调模型", (kept.type, kept.desc, fake2.calls),
           ("行旅与驿传", "一封加急公文在路上要经过什么。", 0))
 
+    # ---- 用户自己制定的选题池（scripts/add_topic.py 写的就是它）
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as td:
+        up = Path(td) / "user.json"
+        check("文件不存在 → 空池（不报错）", topics.load_user_pool(up).is_empty, True)
+        (Path(td) / "bad.json").write_text("{ 这不是 json", encoding="utf-8")
+        check("坏文件 → 空池（不能让手写的文件搞崩出片）",
+              topics.load_user_pool(Path(td) / "bad.json").is_empty, True)
+        pool = topics.UserPool(types={"近代交通": "铁路轮船电报如何改变距离感。"},
+                               topics=[topics.Topic(type="近代交通", title="京张铁路：一条路修了几年？",
+                                                    desc="从勘测到通车的账。", mode="small")],
+                               path=str(up))
+        topics.save_user_pool(pool)
+        back = topics.load_user_pool(up)
+        check("存盘再读回（自定义类型 + 条目）",
+              (len(back.topics), back.types), (1, {"近代交通": "铁路轮船电报如何改变距离感。"}))
+        check("自定义类型能查到高层描述",
+              topics.type_desc("近代交通", back), "铁路轮船电报如何改变距离感。")
+        check_true("用户类型并进 all_types", "近代交通" in topics.all_types(back))
+        check("自定义类型的条目进池子（自己写的排前面）",
+              topics.pool_for("small", back)[0].title, "京张铁路：一条路修了几年？")
+        check("按自定义类型过滤能挑到",
+              topics.pick(seed=1, type_filter="近代交通", user=back).title,
+              "京张铁路：一条路修了几年？")
+        check_true("池子总数 = 内置 + 自己写的",
+                   len(topics.pool_for("small", back)) == len(topics.TOPICS_ANGLE) + 1,
+                   f"→ {len(topics.pool_for('small', back))}")
+        check("按标题回查能带上类型（查重要用）",
+              topics.topic_of("京张铁路：一条路修了几年？", back).type, "近代交通")
+        check_true("自己写的条目也进「最近做过的类型」回查",
+                   "近代交通" in topics.used_types([{"topic": "京张铁路：一条路修了几年？"}], user=back))
+        check_true("池子输出里标出自己写了几条",
+                   "自己写的 1 条" in topics.render_pool("small", back))
+        # 手填类型时，用户自定义类型也是合法的
+        from hsg import cli as _cli
+        check("--topic-type 接受自定义类型",
+              _cli._build_topic("标题", "近代交通", "", back).type, "近代交通")
+        try:
+            _cli._build_topic("标题", "编的类型", "", back)
+            check("自定义类型表里没有的仍然拦下", False, "居然没报错")
+        except SystemExit as exc:
+            check("自定义类型表里没有的仍然拦下", exc.code, 2)
+
     # ---- 选题池的可读输出（run.bat topics）
     txt = topics.render_pool("small")
     check_true("选题池输出含类型与高层描述", "■ 行旅与驿传" in txt and "人与物的长途移动" in txt)
@@ -912,16 +955,20 @@ def test_clip_normalize() -> None:
     src, dest = tmp / "clip_src_test.mp4", tmp / "clip_norm_test.mp4"
     broken = tmp / "clip_broken_test.mp4"
     # 造一条 14 秒、带音轨、1280x720@25 的"人工剪好的素材"
+    # -preset ultrafast 是为了**测试能在内存紧张的机器上跑**（这台机器只剩 1.4GB
+    # 可用时，x264 用默认 medium 编码 1080p 连 7MB 都分配不到，直接 malloc failed）。
+    # 断言的是分辨率/帧率/去音轨/截断时长，跟编码 preset 无关，所以换掉不影响验证力。
     video.run_ffmpeg(["-f", "lavfi", "-i", "testsrc=size=1280x720:rate=25:duration=14",
                       "-f", "lavfi", "-i", "sine=frequency=440:duration=14",
-                      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                      "-c:v", "libx264", "-preset", "ultrafast",
+                      "-pix_fmt", "yuv420p", "-c:a", "aac",
                       "-shortest", str(src)], cwd=tmp, desc="test_clip_src")
     before = clips.probe(src)
     check_true("测试素材本身带音轨（否则这条测试没意义）",
                bool(before.get("has_audio")), f"→ {before}")
     cfg = load_config()
     clips.normalize_clip(src, dest, cfg.clips.get("spec") or {},
-                         float(cfg.clips.get("max_seconds", 10)))
+                         float(cfg.clips.get("max_seconds", 10)), preset="ultrafast")
     after = clips.probe(dest)
     check("规范化后分辨率统一为 1920x1080", [after["width"], after["height"]], [1920, 1080])
     check("规范化后帧率统一为 30", str(after["fps"]).split("/")[0], "30")

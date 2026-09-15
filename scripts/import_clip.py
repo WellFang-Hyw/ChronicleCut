@@ -78,7 +78,8 @@ def do_import(a, cfg) -> int:
           f"　单段上限 {max_sec:.0f}s　去音轨 ✓")
     try:
         got = clips.normalize_clip(src, dest, spec, max_sec,
-                                  src_in=to_seconds(a.in_), src_out=to_seconds(a.out))
+                                  src_in=to_seconds(a.in_), src_out=to_seconds(a.out),
+                                  preset=str(getattr(a, "preset", "") or ""))
     except Exception as exc:  # noqa: BLE001
         print(f"✗ 规范化失败：{exc}")
         return 4
@@ -192,6 +193,8 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="体检素材库")
     ap.add_argument("--remove", metavar="ID", help="撤销一次导入（删记录 + 规范化产物）")
     ap.add_argument("--keep-file", action="store_true", help="配合 --remove：保留规范化产物")
+    ap.add_argument("--preset", default="",
+                    help="x264 preset（留空=x264 默认 medium；批量导入可用 ultrafast 提速）")
     a = ap.parse_args()
     cfg = load_config()
     if a.list:

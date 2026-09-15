@@ -151,10 +151,16 @@ def probe(path: Path) -> dict:
 
 
 def normalize_clip(src: Path, dest: Path, spec: dict, max_seconds: float,
-                   src_in: float = 0.0, src_out: float = 0.0) -> dict:
+                   src_in: float = 0.0, src_out: float = 0.0,
+                   *, preset: str = "") -> dict:
     """把人工剪好的片子规范化：统一规格 + **去音轨** + 限制时长。
 
     `-an` 是这一步的关键：不用原声（版权），而且我们有自己的配音。
+
+    `preset` 留空 = x264 默认（medium），跟以前完全一样；给值就传 `-preset`。
+    为什么留这个口子：1080p 用 medium 编码很吃内存（实测在只剩 1.4GB 可用的机器上
+    x264 连 7MB 都分配不到直接失败），批量导入和回归测试用 `ultrafast` 更合适
+    —— 这些中间产物后面还要重编码一次，这里省下的质量没有意义。
     画面用 force_original_aspect_ratio=increase + crop 铺满，
     不拉伸变形（宁可裁掉边缘）。
     返回 {duration, path}；输入读不出来时抛 FFmpegError。
@@ -174,6 +180,7 @@ def normalize_clip(src: Path, dest: Path, spec: dict, max_seconds: float,
         ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src), "-an",
          "-vf", (f"scale={w}:{h}:force_original_aspect_ratio=increase,"
                  f"crop={w}:{h},setsar=1,fps={fps}"),
+         *(["-preset", str(preset)] if preset else []),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
          "-movflags", "+faststart", str(dest)],
         cwd=dest.parent, desc="normalize_clip")

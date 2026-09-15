@@ -32,7 +32,13 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+import json
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+log = logging.getLogger("hsg.topics")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------- L1 故事类型
 STORY_TYPES: dict[str, str] = {
@@ -63,6 +69,83 @@ STORY_TYPES: dict[str, str] = {
 
 # 没给出类型时的兜底名（`classify()` 认不出来时用）
 UNKNOWN_TYPE = "未分类"
+# 用户自己制定的选题放在这个文件（config: story.user_topics；格式见 scripts/add_topic.py）
+DEFAULT_USER_FILE = "data/topics_user.json"
+
+
+@dataclass(frozen=True)
+class UserPool:
+    """用户自己制定的选题池：可以补充/新增类型，也可以追加选题条目。"""
+    types: dict[str, str] = field(default_factory=dict)
+    topics: list["Topic"] = field(default_factory=list)
+    path: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.types and not self.topics
+
+    def merged_types(self) -> dict[str, str]:
+        """内置类型表 + 用户自定义类型（用户可覆盖同名类型的描述）。"""
+        return {**STORY_TYPES, **self.types}
+
+    def items(self, mode: str = "small") -> list["Topic"]:
+        m = str(mode or "small")
+        return [t for t in self.topics if getattr(t, "mode", m) == m or not getattr(t, "mode", "")]
+
+
+def user_pool_path(cfg=None) -> object:
+    """用户选题池文件路径（读配置，相对项目根解析）。"""
+    rel = DEFAULT_USER_FILE
+    if cfg is not None:
+        rel = str(cfg.story.get("user_topics") or DEFAULT_USER_FILE)
+    q = Path(rel)
+    if q.is_absolute():
+        return q
+    return PROJECT_ROOT / q
+
+
+def load_user_pool(path=None) -> UserPool:
+    """读用户选题池。文件不存在/坏掉都返回空池，不抛错（不能让手写的文件搞崩出片）。
+
+    格式：
+        {"types": {"自定义类型": "这一路故事讲什么"},
+         "topics": [{"type": "自定义类型", "title": "标题", "desc": "这一期讲什么",
+                     "mode": "small"}]}
+    """
+    q = Path(path) if path else user_pool_path()
+    if not q.exists():
+        return UserPool(path=str(q))
+    try:
+        raw = json.loads(q.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("用户选题池读不了（忽略，继续用内置池）：%s —— %s", q, exc)
+        return UserPool(path=str(q))
+    types = {str(k): str(v) for k, v in (raw.get("types") or {}).items() if str(k).strip()}
+    items: list[Topic] = []
+    for it in raw.get("topics") or []:
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()
+        if not title:
+            log.warning("用户选题池里有一条没有 title，跳过：%s", it)
+            continue
+        items.append(Topic(type=str(it.get("type") or "").strip(), title=title,
+                           desc=str(it.get("desc") or "").strip(),
+                           mode=str(it.get("mode") or "small").strip()))
+    if items or types:
+        log.info("用户选题池：%d 条选题 / %d 个自定义类型（%s）", len(items), len(types), q.name)
+    return UserPool(types=types, topics=items, path=str(q))
+
+
+def save_user_pool(pool: UserPool) -> object:
+    q = Path(pool.path)
+    q.parent.mkdir(parents=True, exist_ok=True)
+    q.write_text(json.dumps({
+        "types": pool.types,
+        "topics": [{"type": t.type, "title": t.title, "desc": t.desc,
+                    "mode": getattr(t, "mode", "small")} for t in pool.topics],
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    return q
 
 
 # ---------------------------------------------------------------- L2 选题条目
@@ -74,9 +157,10 @@ class Topic:
     池子里 60 多条都是这么位置传参的，改字段顺序会让整池数据错位
     （这个坑当场踩过：类型被塞进标题、标题被当成类型，池子打出来是空的）。
     """
-    type: str = ""              # L1 故事类型（STORY_TYPES 的键）
+    type: str = ""              # L1 故事类型（STORY_TYPES 的键，或用户自定义类型）
     title: str = ""             # L2 详细标题（原来那个字符串）
     desc: str = ""              # L2 与这个故事相关性最高的描述（可由 LLM 补）
+    mode: str = ""              # 只对用户自定义条目有意义：small / event（空=both）
 
     @property
     def type_desc(self) -> str:
@@ -90,20 +174,22 @@ class Topic:
         return self.title
 
 
-def topic_of(title: str) -> Topic:
+def topic_of(title: str, user: UserPool | None = None) -> Topic:
     """按标题回找一个池子里的条目（带类型和描述）；池子里没有就返回裸标题。"""
-    for t in ITEMS_SMALL + ITEMS_EVENT:
+    pool = list((user or UserPool()).topics) + ITEMS_SMALL + ITEMS_EVENT
+    for t in pool:
         if t.title == title:
             return t
     return Topic(title=str(title or ""))
 
 
-def type_desc(name: str) -> str:
-    return STORY_TYPES.get(str(name or ""), "")
+def type_desc(name: str, user: UserPool | None = None) -> str:
+    table = (user.merged_types() if user else STORY_TYPES)
+    return table.get(str(name or ""), "")
 
 
-def all_types() -> list[str]:
-    return list(STORY_TYPES)
+def all_types(user: UserPool | None = None) -> list[str]:
+    return list(user.merged_types() if user else STORY_TYPES)
 
 
 # ---------------------------------------------------------------- 小切口池（默认）
@@ -228,12 +314,16 @@ TOPICS_EVENT: list[str] = [t.title for t in ITEMS_EVENT]
 TOPICS = TOPICS_ANGLE
 
 
-def pool_for(mode: str) -> list[Topic]:
-    """某个切入方式的选题池（返回带类型与描述的条目）。"""
-    return list(ITEMS_EVENT if str(mode) == "event" else ITEMS_SMALL)
+def pool_for(mode: str, user: UserPool | None = None) -> list[Topic]:
+    """某个切入方式的选题池（内置 + 用户自定义，返回带类型与描述的条目）。
+
+    用户条目前面插（先看自己写的），内置在后。
+    """
+    builtin = list(ITEMS_EVENT if str(mode) == "event" else ITEMS_SMALL)
+    return (list((user or UserPool()).items(mode)) if user else []) + builtin
 
 
-def used_types(records: list[dict], last: int = 4) -> list[str]:
+def used_types(records: list[dict], last: int = 4, user: UserPool | None = None) -> list[str]:
     """最近几期做过的类型（用来让选题避开连着做同一类）。
 
     老记录没有 `topic_type` 字段（这个字段是后加的）→ 按标题回查池子补类型，
@@ -246,14 +336,15 @@ def used_types(records: list[dict], last: int = 4) -> list[str]:
         t = str(r.get("topic_type") or "").strip()
         if not t:
             title = str(r.get("topic") or r.get("title") or "")
-            t = topic_of(title).type or (_guess_type(title) if title else "")
+            t = topic_of(title, user).type or (_guess_type(title) if title else "")
         if t:
             out.append(t)
     return out
 
 
 def pick(seed: int | None = None, is_used=None, mode: str = "small",
-         type_filter: str = "", recent_types: list[str] | None = None) -> Topic | None:
+         type_filter: str = "", recent_types: list[str] | None = None,
+         user: UserPool | None = None) -> Topic | None:
     """从池子里挑一个**没用过**的选题。
 
     优先级：类型近期没做过 > 类型做过。同一档内随机。
@@ -261,7 +352,7 @@ def pick(seed: int | None = None, is_used=None, mode: str = "small",
     `is_used(candidate_title) -> bool` 由调用方给（它知道生成记录）；
     池子被挑完了返回 None，由调用方决定怎么办（本项目是让模型出个新题）。
     """
-    pool = pool_for(mode)
+    pool = pool_for(mode, user)
     if type_filter:
         pool = [t for t in pool if t.type == type_filter]
     rng = random.Random(seed)
@@ -422,8 +513,9 @@ CLASSIFY_SYSTEM = """你是历史纪录片栏目的选题编辑。请判断下�
 只输出 JSON：{{"type": "类型名"}}"""
 
 
-def classify(title: str, cfg, llm) -> str:
+def classify(title: str, cfg, llm, user: UserPool | None = None) -> str:
     """给一个手填的选题判类型（`-t "..."` 走的这条）。失败退回关键词规则。"""
+    user_types = user.merged_types() if user else None
     if llm is not None:
         try:
             data = llm.chat_json(
@@ -431,7 +523,7 @@ def classify(title: str, cfg, llm) -> str:
                 f"【选题】{str(title or '').strip()}\n\n【输出】只输出 JSON：{{\"type\": \"…\"}}",
                 max_tokens=120, temperature=0.2)
             t = str((data or {}).get("type") or "").strip() if isinstance(data, dict) else ""
-            if t in STORY_TYPES:
+            if t in (user_types or STORY_TYPES):
                 return t
         except Exception:  # noqa: BLE001
             pass
@@ -455,18 +547,19 @@ def fill_levels(topic: Topic, cfg, llm) -> Topic:
     return Topic(title=topic.title, type=ttype, desc=tdesc)
 
 
-def render_pool(mode: str = "small") -> str:
+def render_pool(mode: str = "small", user: UserPool | None = None) -> str:
     """把两级选题池打成可读文本（`run.bat topics` 用 —— 让人能先看类型再挑题）。"""
-    pool = pool_for(mode)
-    lines = [f"选题池（{mode} 模式，共 {len(pool)} 条）", ""]
+    pool = pool_for(mode, user)
+    extra = f"，其中自己写的 {len((user or UserPool()).items(mode))} 条" if user else ""
+    lines = [f"选题池（{mode} 模式，共 {len(pool)} 条{extra}）", ""]
     by_type: dict[str, list[Topic]] = {}
     for t in pool:
         by_type.setdefault(t.type, []).append(t)
-    for name in all_types():
+    for name in all_types(user):
         items = by_type.get(name)
         if not items:
             continue
-        lines.append(f"■ {name}　{STORY_TYPES.get(name, '')}")
+        lines.append(f"■ {name}　{type_desc(name, user)}")
         for t in items:
             lines.append(f"    · {t.title}")
             if t.desc:
