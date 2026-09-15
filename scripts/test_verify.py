@@ -1633,6 +1633,140 @@ def test_generate_image_prompt() -> None:
           images.generate_scene_image(1, "清代 铜钱", cfg2, ROOT / "data/tmp"), (None, "", "", {}))
 
 
+def test_series() -> None:
+    """系列片：按集号取下一集、不进随机池、进度表、画面标签、落盘。"""
+    print("\n[系列 topics.Series / next_episode / kicker_text]")
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from hsg import history, pipeline, topics
+
+    tmp = Path(tempfile.mkdtemp()) / "topics_user.json"
+    S = "测试系列"
+    pool = topics.UserPool(path=str(tmp))
+    pool.series[S] = "这个系列讲什么（一句话）"
+    # 故意乱序写入 + 集号跳号（模拟用户不是按顺序加的）
+    pool.topics.append(topics.Topic(type="政变与权力", title="第三集标题", desc="d" * 20,
+                                    series=S, ep=3))
+    pool.topics.append(topics.Topic(type="政变与权力", title="第一集标题", desc="d" * 20,
+                                    series=S, ep=1))
+    pool.topics.append(topics.Topic(type="官府与吏治", title="普通单集", desc="d" * 20))
+    topics.save_user_pool(pool)
+    raw = json.loads(tmp.read_text(encoding="utf-8"))
+    check_true("落盘带 series 段", "series" in raw and S in raw["series"], f"→ {list(raw)}")
+    check_true("系列条目的 series/ep 单独存（不塞进标题）",
+               raw["topics"][0].get("series") == S and raw["topics"][0].get("ep") == 3,
+               f"→ {raw['topics'][0]}")
+    check_true("非系列条目不写 series 字段", "series" not in raw["topics"][2],
+               f"→ {raw['topics'][2]}")
+
+    back = topics.load_user_pool(tmp)
+    check("读回后系列说明不丢", back.series.get(S), pool.series[S])
+    check_true("episodes() 按集号排序（写入顺序是乱的）",
+               [t.ep for t in back.episodes(S)] == [1, 3],
+               f"→ {[t.ep for t in back.episodes(S)]}")
+    check_true("系列条目**不进**随机池（否则系列会被打乱）",
+               all(not t.series for t in back.items("small")),
+               f"→ {[t.title for t in back.items('small')]}")
+    check_true("单集条目照旧能挑", any(t.title == "普通单集" for t in back.items("small")))
+
+    # ---- 下一集：按集号升序 + 跳过已做过的
+    nxt = topics.next_episode(back, S)
+    check("没做过任何一集时 → 取集号最小的", nxt.ep, 1)
+    done = {nxt.title}
+    nxt2 = topics.next_episode(back, S, lambda x: x in done)
+    check("第 1 集做过 → 取第 3 集", nxt2.ep, 3)
+    nxt3 = topics.next_episode(back, S, lambda x: True)
+    check("全做过 → None（不硬塞重复集）", nxt3, None)
+    check("系列不存在 → None", topics.next_episode(back, "没有这个系列"), None)
+
+    # ---- 进度表
+    rec = {"title": "第一集标题", "generated_at": "2026-09-15T10:00:00"}
+    txt = topics.series_progress(back, [rec], S)
+    check_true("进度表标出已出的集", "✓" in txt and "2026-09-15" in txt, f"→ {txt[:120]}")
+    check_true("进度表算出进度 1/2", "1/2" in txt, f"→ {txt[:120]}")
+    check_true("没建系列时给出建系列的命令（不是空白）",
+               "add_topic.py" in topics.series_progress(topics.UserPool(), [], ""))
+    check_true("进度表认「成片标题」也能对上（生成记录字段有出入时不误报待做）",
+               "✓" in topics.series_progress(
+                   back, [{"title": "x", "topic": "第一集标题",
+                           "generated_at": "2026-09-15"}], S))
+
+    # ---- 画面标签
+    st = __import__("hsg.models", fromlist=["Story"]).Story(topic="x", series=S, series_ep=3)
+
+    class _Ch:
+        index = 2
+        heading = "权柄从哪里来"
+
+    check("系列集 kicker = 栏目 · 系列 第N集", pipeline.kicker_text("历史小故事", st, _Ch()),
+          f"历史小故事 · {S} 第3集")
+    check_true("系列集 kicker 里不重复章节标题（下面那行大字就是）",
+               "权柄" not in pipeline.kicker_text("历史小故事", st, _Ch()))
+    check("封面（没章节参数）跟成片同口径",
+          pipeline.kicker_text("历史小故事", st), f"历史小故事 · {S} 第3集")
+    st2 = __import__("hsg.models", fromlist=["Story"]).Story(topic="x")
+    check("单集照旧显示章节", pipeline.kicker_text("历史小故事", st2, _Ch()),
+          "历史小故事 · 第2章 权柄从哪里来")
+    st3 = __import__("hsg.models", fromlist=["Story"]).Story(topic="x", series=S)
+    check("系列没写集号 → 不硬编「第0集」", pipeline.kicker_text("历史小故事", st3),
+          f"历史小故事 · {S}")
+
+    # ---- 系列标签在封面宽度里放得下（放不下会被 _wrap_cjk 静默截断）
+    from PIL import ImageFont
+    from hsg.media import _font, _wrap_cjk
+    for name, w, h in (("竖屏", 1080, 1920), ("横屏", 1920, 1080)):
+        f = _font(int(min(w * 0.040, h * 0.022)), bold=True)
+        label = pipeline.kicker_text("历史小故事", st)
+        lines = _wrap_cjk(label, f, int(w * (1 - 0.14)))
+        check_true(f"封面 kicker 在{name}里一行放得下（不会被截断）", len(lines) == 1,
+                   f"→ {len(lines)} 行 {label}")
+
+    # ---- 生成记录 / metadata 带上系列（进度统计靠它）
+    from hsg.config import load_config
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        cfg["paths"]["data_dir"] = td          # 别碰真实记录
+        _st = __import__("hsg.models", fromlist=["Story"]).Story(
+            topic="越策", title="越策标题", series=S, series_ep=3)
+        rec = history.build_record(_st, cfg, total_seconds=10.0)
+        check_true("build_record 带出 series/series_ep",
+                   rec.get("series") == S and rec.get("series_ep") == 3, f"→ {rec.get('series')}")
+        history.append_record(cfg, rec)
+        got = [r for r in history.load(cfg) if r.get("topic") == "越策"]
+        check_true("生成记录里有 series/series_ep（不然进度永远 0/N）",
+                   got and got[0].get("series") == S and got[0].get("series_ep") == 3,
+                   f"→ {got}")
+
+    # ---- add_topic 的系列校验
+    import subprocess
+    import sys as _sys
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "add_topic.py"
+    py = _sys.executable
+
+    def _at(*argv):
+        r = subprocess.run([py, str(script), "--file", str(tmp), *argv],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           cwd=str(root))
+        return (r.stdout or "") + (r.stderr or ""), r.returncode
+
+    out, code = _at("--series", S, "--type", "政变与权力",
+                    "--title", "缺集号的集：这条本该被拦下来才对？", "--desc", "d" * 20)
+    check_true("系列片不给 --ep → 拦下（退出码 2）", code == 2 and "--ep" in out, f"→ {out.strip()[:80]}")
+    out, code = _at("--series", S, "--ep", "1", "--type", "政变与权力",
+                    "--title", "重复集号测试用的一条长标题内容", "--desc", "d" * 20)
+    check_true("同一集号重复 → 拦下", code == 2 and "已经有" in out, f"→ {out.strip()[:80]}")
+    out, code = _at("--series", S, "--ep", "2", "--type", "政变与权力",
+                    "--title", "第二集标题：一条够长的切口问句内容", "--desc", "d" * 20)
+    check_true("正常加一集", code == 0, f"→ {out.strip()[:120]}")
+    back2 = topics.load_user_pool(tmp)
+    check_true("加完之后集号连续（1/2/3）",
+               [t.ep for t in back2.episodes(S)] == [1, 2, 3],
+               f"→ {[t.ep for t in back2.episodes(S)]}")
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -1646,6 +1780,7 @@ def main() -> int:
     test_history_roundtrip()
     test_angle_mode()
     test_topic_levels()
+    test_series()
     test_fact_audit()
     test_license_policy()
     test_culture_filter()

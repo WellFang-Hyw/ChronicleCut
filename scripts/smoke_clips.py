@@ -16,6 +16,7 @@
 用法：
     python scripts/smoke_clips.py                  # 横竖两版
     python scripts/smoke_clips.py -o landscape     # 只跑一版（快一倍）
+    python scripts/smoke_clips.py --small          # 960x540（内存紧的机器用）
 """
 from __future__ import annotations
 
@@ -43,11 +44,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def check_true(name: str, cond: bool, detail: str = "") -> None:
-    """断言「条件成立」——用 check(name, cond, True) 会把布尔值当「得到」去比字符串。"""
-    if cond:
-        check(name, True, detail)
-    else:
-        check(name, f"不成立 {detail}", True)
+    """断言「条件成立」。
+
+    坑（踩过）：写成 `check(name, f"不成立 {detail}", True)` 是**参数错位** ——
+    check 的签名是 (name, ok, detail)，于是字符串被当成 ok（恒真 → 失败被记成通过），
+    布尔值被当成 detail（`'  ' + True` 直接 TypeError）。
+    结果是「任何一项断言失败 = 冒烟脚本崩掉」，既看不到是哪一项、也看不到后面的检查。
+    """
+    check(name, bool(cond), detail if cond else f"不成立  {detail}".strip())
 
 
 def make_clip(dst: Path, seconds: float, size: str, rate: int = 30) -> Path:
@@ -81,6 +85,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--orientation", default="both",
                     choices=["both", "portrait", "landscape"])
+    ap.add_argument("--small", action="store_true",
+                    help="小尺寸跑（960x540 / 540x960）：内存紧的机器上也能跑起来。"
+                         "尺寸相关的数值验收（blurpad 清晰带）不看这项时更稳，其余检查一项不少")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -98,6 +105,16 @@ def main() -> int:
     cfg.video["cover"] = False
     spec = {k: int(cfg.clips.spec.get(k, d)) for k, d in
             (("width", 1920), ("height", 1080), ("fps", 30))}
+    if args.small:
+        # 本机 14GB、被 VS Code/浏览器吃满时会剩不到 1GB，1080p 图层链会
+        # 「Cannot allocate memory」。小尺寸只是让冒烟跑得起来，规格验收仍按真实配置。
+        spec.update(width=960, height=540)
+        # 注意：orientations 里的值是 Config（dict 子类，靠 __getattr__ 取 width），
+        # 整个替换成普通 dict 会让 cfg.video.orientations[o].width 直接 AttributeError
+        for _o, _w, _h in (("portrait", 540, 960), ("landscape", 960, 540)):
+            _t = cfg.video["orientations"][_o]
+            _t["width"], _t["height"] = _w, _h
+        print("（--small：960x540 / 540x960）")
 
     print(f"=== 冒烟：切片 + EDL 剪辑链路 → {work} ===")
 
@@ -115,7 +132,10 @@ def main() -> int:
             index=i, text=f"这是第{i}个分镜的旁白，用来验收画面与语音是否对得上。" * 2,
             image_query=f"示例 检索词 {i}", caption=f"图注 {i}", chapter_index=ch,
             is_chapter_start=(i in (1, 4)), audio_path=a, duration=d))
-    story = Story(topic="冒烟测试", title="切片链路冒烟", period="东汉末", chapters=chapters)
+    # 当成「系列片的一集」来跑：顶部小字会换成「栏目 · 系列名 第N集」，
+    # 这样系列标签的渲染路径（含封面同口径）也在冒烟覆盖里，零 API 成本
+    story = Story(topic="冒烟测试", title="切片链路冒烟", period="东汉末", chapters=chapters,
+                  series="冒烟系列", series_ep=1)
     check("静音轨生成（.mp3 + libmp3lame）",
           all((audio_dir / f"scene_{i:03d}.mp3").exists() for i in range(1, 7)))
 
@@ -137,7 +157,9 @@ def main() -> int:
     for i, (size, scene) in enumerate([("1920x1080", 1), ("1440x1080", 2)], start=1):
         raw = make_clip(work / "raw" / f"{i}.mp4", 9.0, size)
         dest = clips_mod.clip_dir(cfg) / "norm" / f"smoke_{i:02d}.mp4"
-        info = clips_mod.normalize_clip(raw, dest, spec, float(cfg.clips.max_seconds))
+        # 冒烟不是生产：preset 用 ultrafast，内存紧的机器也能跑（生产默认还是 medium）
+        info = clips_mod.normalize_clip(raw, dest, spec, float(cfg.clips.max_seconds),
+                                       preset="ultrafast")
         bind = slots_of.get(scene, [])
         rec = clips_mod.add_clip(index, {
             "id": f"smoke_{i:02d}", "file": "norm/" + dest.name, "title": f"合成素材{i}",
@@ -250,7 +272,7 @@ def main() -> int:
         ink_top = frames.ink_band(fg, 0.04, 0.09)
         check("大字标注落在中部带（0.40-0.52）", ink_callout > 200, f"{ink_callout} 像素")
         check("人名条落在左侧带（0.57-0.67）", ink_nametag > 200, f"{ink_nametag} 像素")
-        check("栏目小字在顶部带（0.04-0.09）", ink_top > 50, f"{ink_top} 像素")
+        check("顶部小字带（系列标签「栏目 · 系列名 第N集」）", ink_top > 50, f"{ink_top} 像素")
     else:
         check("标注层存在", False, "没找到 fg.png")
 
@@ -261,8 +283,15 @@ def main() -> int:
                           "-q:v", "1", "-y", frame.name], cwd=work, desc="抽帧验收")
         mid = band_energy(frame, 0.44, 0.56)
         edge = max(band_energy(frame, 0.02, 0.12), band_energy(frame, 0.88, 0.98))
+        # 阈值按生产规格 1080x1920 标定（那里实测约 5.8×）。--small 只有 540x960：
+        # 同一 CRF 下编码块效应在低分辨率里占的比重更大，而模糊衬底本来就没有细节，
+        # 被块效应「补」回来的高频相对更多 → 比值天然变低（实测 2.5×）。
+        # 所以小尺寸放宽阈值，但仍然要求「中间明显比衬底清楚」，并把数字打出来备查。
+        ratio = 1.8 if args.small else 2.5
         check_true("竖屏：中间是完整画面、上下是模糊衬底（blurpad 生效）",
-                   mid > edge * 2.5, f"中间能量 {mid} / 衬底 {edge}")
+                   mid > edge * ratio,
+                   f"中间能量 {mid} / 衬底 {edge}（要求 ×{ratio}）"
+                   + ("　--small：阈值放宽，严格标定看 1080x1920" if args.small else ""))
 
     print("\n" + "=" * 70)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

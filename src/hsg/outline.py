@@ -148,7 +148,8 @@ EVENT_STRUCTURE = """【结构建议】
 
 
 def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "",
-                  *, topic_type: str = "", topic_desc: str = "") -> Story:
+                  *, topic_type: str = "", topic_desc: str = "",
+                  series: str = "", series_ep: int = 0) -> Story:
     """产出分章大纲。
 
     `topic_type` / `topic_desc` 是选题的**两级**信息（类型 + 这一期讲什么），
@@ -168,6 +169,11 @@ def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "",
     )
 
     brief = ""
+    if series:
+        # 系列集要写清「这是第几集」：写稿时得避免把前一集讲过的内容重复一遍，
+        # 也要让开头有「接着上一集」的接续感。
+        brief += (f"\n【这是一集系列片】系列名《{series}》第 {series_ep} 集。"
+                  f"不要把系列里别的集的内容拿来充篇幅；若需要观众知道前情，一句带过即可。\n")
     if topic_type or topic_desc:
         brief = f"\n【故事类型】{topic_type or '未分类'}"
         if topic_type:
@@ -238,6 +244,8 @@ def build_outline(topic: str, cfg: Config, llm: LLM, material: str = "",
     from .topics import STORY_TYPES
     story = Story(
         topic=topic,
+        series=series or "",
+        series_ep=int(series_ep or 0),
         topic_type=topic_type or "",
         topic_type_desc=STORY_TYPES.get(topic_type, ""),
         topic_desc=topic_desc or "",

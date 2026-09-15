@@ -254,6 +254,8 @@ def build_record(
         # 选题两级：查重看标题，类型用于「避开连着做同一类」
         "topic_type": story.topic_type,
         "topic_desc": story.topic_desc,
+        "series": story.series,
+        "series_ep": story.series_ep,
         "angle_question": story.angle_question,
         "angle_mode": str(cfg.story.get("angle_mode") or "small"),
         "period": story.period,
@@ -342,6 +344,8 @@ def backfill_from_metadata(cfg: Config) -> int:
             "generated_at": ts,
             "topic": data.get("topic") or "",
             "topic_type": data.get("topic_type") or "",
+            "series": data.get("series") or "",
+            "series_ep": data.get("series_ep") or 0,
             "topic_desc": data.get("topic_desc") or "",
             "title": title,
             "period": data.get("period") or "",

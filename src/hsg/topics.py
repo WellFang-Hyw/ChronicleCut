@@ -78,19 +78,41 @@ class UserPool:
     """用户自己制定的选题池：可以补充/新增类型，也可以追加选题条目。"""
     types: dict[str, str] = field(default_factory=dict)
     topics: list["Topic"] = field(default_factory=list)
+    series: dict[str, str] = field(default_factory=dict)   # 系列名 → 一句话说明
     path: str = ""
 
     @property
     def is_empty(self) -> bool:
-        return not self.types and not self.topics
+        return not self.types and not self.topics and not self.series
 
     def merged_types(self) -> dict[str, str]:
         """内置类型表 + 用户自定义类型（用户可覆盖同名类型的描述）。"""
         return {**STORY_TYPES, **self.types}
 
     def items(self, mode: str = "small") -> list["Topic"]:
+        """**非系列**的选题（系列条目由 next_episode 按集号取，不进随机池）。
+
+        为什么系列不能进随机池：系列必须按集号顺序出，混进随机选题会被打乱
+        （第 7 集先做了、第 3 集还没做，观众看不成系列）。
+        """
         m = str(mode or "small")
-        return [t for t in self.topics if getattr(t, "mode", m) == m or not getattr(t, "mode", "")]
+        return [t for t in self.topics
+                if not t.series and (getattr(t, "mode", m) == m or not getattr(t, "mode", ""))]
+
+    def episodes(self, series: str = "") -> list["Topic"]:
+        """某个系列的全部集（按集号排序）；不传系列名则返回所有系列条目。"""
+        out = [t for t in self.topics if t.series and (not series or t.series == series)]
+        return sorted(out, key=lambda t: (t.series, t.ep or 999))
+
+    def series_names(self) -> list[str]:
+        seen: list[str] = []
+        for t in self.topics:
+            if t.series and t.series not in seen:
+                seen.append(t.series)
+        for n in self.series:
+            if n not in seen:
+                seen.append(n)
+        return seen
 
 
 def user_pool_path(cfg=None) -> object:
@@ -121,6 +143,11 @@ def load_user_pool(path=None) -> UserPool:
         log.warning("用户选题池读不了（忽略，继续用内置池）：%s —— %s", q, exc)
         return UserPool(path=str(q))
     types = {str(k): str(v) for k, v in (raw.get("types") or {}).items() if str(k).strip()}
+    series: dict[str, str] = {}
+    for k, v in (raw.get("series") or {}).items():
+        if not str(k).strip():
+            continue
+        series[str(k)] = str((v or {}).get("desc") if isinstance(v, dict) else (v or ""))
     items: list[Topic] = []
     for it in raw.get("topics") or []:
         if not isinstance(it, dict):
@@ -129,21 +156,29 @@ def load_user_pool(path=None) -> UserPool:
         if not title:
             log.warning("用户选题池里有一条没有 title，跳过：%s", it)
             continue
+        try:
+            ep = int(it.get("ep") or 0)
+        except (TypeError, ValueError):
+            ep = 0
         items.append(Topic(type=str(it.get("type") or "").strip(), title=title,
                            desc=str(it.get("desc") or "").strip(),
-                           mode=str(it.get("mode") or "small").strip()))
-    if items or types:
-        log.info("用户选题池：%d 条选题 / %d 个自定义类型（%s）", len(items), len(types), q.name)
-    return UserPool(types=types, topics=items, path=str(q))
+                           mode=str(it.get("mode") or "small").strip(),
+                           series=str(it.get("series") or "").strip(), ep=ep))
+    if items or types or series:
+        log.info("用户选题池：%d 条选题（含 %d 集系列）/ %d 个自定义类型 / %d 个系列（%s）",
+                 len(items), len([t for t in items if t.series]), len(types), len(series), q.name)
+    return UserPool(types=types, topics=items, series=series, path=str(q))
 
 
 def save_user_pool(pool: UserPool) -> object:
     q = Path(pool.path)
     q.parent.mkdir(parents=True, exist_ok=True)
     q.write_text(json.dumps({
+        "series": {k: {"desc": v} for k, v in pool.series.items()},
         "types": pool.types,
         "topics": [{"type": t.type, "title": t.title, "desc": t.desc,
-                    "mode": getattr(t, "mode", "small")} for t in pool.topics],
+                    "mode": t.mode or "small", **({"series": t.series, "ep": t.ep} if t.series else {})}
+                   for t in pool.topics],
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     return q
 
@@ -161,6 +196,8 @@ class Topic:
     title: str = ""             # L2 详细标题（原来那个字符串）
     desc: str = ""              # L2 与这个故事相关性最高的描述（可由 LLM 补）
     mode: str = ""              # 只对用户自定义条目有意义：small / event（空=both）
+    series: str = ""            # 所属系列（如「古代十大权臣」；空=单集）
+    ep: int = 0                 # 系列集号（1 起）
 
     @property
     def type_desc(self) -> str:
@@ -545,6 +582,54 @@ def fill_levels(topic: Topic, cfg, llm) -> Topic:
     if not tdesc:
         tdesc = ensure_desc(Topic(title=topic.title, type=ttype), cfg, llm).desc
     return Topic(title=topic.title, type=ttype, desc=tdesc)
+
+
+def next_episode(user: UserPool, series: str, is_used=None) -> Topic | None:
+    """取这个系列**下一集**（按集号升序，跳过已经做过的）。
+
+    为什么按集号而不是随机：系列是有顺序的，第 7 集先出、第 3 集还没出，观众看不成系列。
+    """
+    if not user:
+        return None
+    for t in user.episodes(series):
+        if is_used is not None and is_used(t.title):
+            continue
+        return t
+    return None
+
+
+def series_progress(user: UserPool, records: list[dict], series: str = "") -> str:
+    """系列进度表（`run.bat series` 用）：每集做了没有、稿子在哪。"""
+    names = [series] if series else user.series_names()
+    if not names:
+        return ("还没有系列。建一个：python scripts\\add_topic.py --series \"古代十大权臣\" "
+                "--series-desc \"这一类讲什么\" --ep 1 --type \"政变与权力\" --title \"…\" --desc \"…\"\n")
+    done = {}
+    for r in records:
+        key = str(r.get("title") or "")
+        if key:
+            done[key] = r
+    lines: list[str] = []
+    for name in names:
+        eps = user.episodes(name)
+        got = sum(1 for t in eps if t.title in done or _done_by_topic(done, t.title))
+        lines.append(f"■ {name}　{user.series.get(name, '（没有系列说明）')}")
+        lines.append(f"  进度 {got}/{len(eps)} 集" if eps else "  （这条系列还没有集）")
+        for t in eps:
+            hit = done.get(t.title) or _done_by_topic(done, t.title)
+            mark = f"✓ 已出（{str(hit.get('generated_at'))[:10]}）" if hit else "· 待做"
+            lines.append(f"    {t.ep or '?':>2}. {t.title}")
+            lines.append(f"        {mark}　{t.desc or '（没有描述）'}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _done_by_topic(done: dict, title: str) -> dict:
+    """生成记录里存的是「选题标题」还是「成片标题」都可能，两个都查一下。"""
+    for r in done.values():
+        if title and title in (str(r.get("topic") or ""), str(r.get("title") or "")):
+            return r
+    return {}
 
 
 def render_pool(mode: str = "small", user: UserPool | None = None) -> str:

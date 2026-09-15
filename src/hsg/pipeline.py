@@ -175,6 +175,22 @@ def fit_length(
     return total
 
 
+def kicker_text(channel: str, story, chapter=None) -> str:
+    """画面上方那行小字（kicker）。
+
+    系列集换成系列标签：「栏目 · 系列名 第N集」——观众要能一眼看出这是系列的哪一集。
+    章节标题本来就是下面那行大字，kicker 里不重复它。
+    封面走同一条规则（不带章节参数），保证成片和封面口径一致。
+    """
+    ser = str(getattr(story, "series", "") or "").strip()
+    if ser:
+        ep = int(getattr(story, "series_ep", 0) or 0)
+        return f"{channel} · {ser} 第{ep}集" if ep else f"{channel} · {ser}"
+    if chapter is not None:
+        return f"{channel} · 第{chapter.index}章 {chapter.heading}"
+    return channel
+
+
 def images_for_story(story: Story, cfg: Config, llm) -> list[dict]:
     """给所有**有语音**的分镜配图，返回来源日志（供留档与复核）。
 
@@ -249,6 +265,8 @@ def run(
     *,
     topic_type: str = "",
     topic_desc: str = "",
+    series: str = "",
+    series_ep: int = 0,
     keys: ApiKeys | None = None,
     do_images: bool = True,
     do_video: bool = True,
@@ -299,7 +317,8 @@ def run(
         topic_type, topic_desc = filled.type, filled.desc      # 日志由 build_outline 打
 
         story = build_outline(topic, cfg, llm, material,
-                              topic_type=topic_type, topic_desc=topic_desc)
+                              topic_type=topic_type, topic_desc=topic_desc,
+                              series=series, series_ep=series_ep)
 
         # ---------- 2.5 锚点核查（写稿前把编造的出处挡掉）
         stats["fact_audit"] = verify.audit_facts(story, cfg, llm)
@@ -696,7 +715,7 @@ def render_orientation(story: Story, cfg: Config, orient: str,
     # ---- 正文分镜
     for s in scenes:
         ch = story.chapters[s.chapter_index - 1] if 0 < s.chapter_index <= len(story.chapters) else None
-        kicker = f"{channel} · 第{ch.index}章 {ch.heading}" if ch else channel
+        kicker = kicker_text(channel, story, ch)
         title = ch.heading if (s.is_chapter_start and ch) else ""
         is_first = s is scenes[0]
         is_last = s is scenes[-1]
@@ -780,7 +799,7 @@ def render_orientation(story: Story, cfg: Config, orient: str,
             out_dir / f"{stamp}_{safe_filename(story.title)}_{label}_封面.jpg",
             size, cfg,
             title=story.title,
-            kicker=channel,
+            kicker=kicker_text(channel, story),
             subtitle=story.angle_question or story.period,
             foot=str(v.get("intro_slogan") or ""),
             image_path=next((s.image_path for s in scenes if s.image_path), None),
@@ -831,6 +850,7 @@ def write_script(story: Story, cfg: Config, path: Path, total: float) -> Path:
         f"# {story.title}",
         "",
         f"- 主题：{story.topic}",
+        (f"- 系列：《{story.series}》第 {story.series_ep} 集" if story.series else ""),
         f"- 故事类型：{story.topic_type or '（未分类）'}"
         f"{('　' + story.topic_type_desc) if story.topic_type_desc else ''}",
         f"- 这一期讲什么：{story.topic_desc or '（未生成）'}",
@@ -889,6 +909,8 @@ def write_metadata(story: Story, cfg: Config, path: Path, rows: list[dict], extr
         "topic_type": story.topic_type,
         "topic_type_desc": story.topic_type_desc,
         "topic_desc": story.topic_desc,
+        "series": story.series,
+        "series_ep": story.series_ep,
         "angle_question": story.angle_question,
         "angle_mode": str(cfg.story.get("angle_mode") or "small"),
         "period": story.period,

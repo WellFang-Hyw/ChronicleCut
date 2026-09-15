@@ -96,7 +96,8 @@ def _plan_stem(title: str) -> str:
     return f"{_dt.now().strftime('%Y%m%d')}_plan_{pipeline_safe(title)}"
 
 
-def _build_topic(title: str, type_name: str = "", desc: str = "", user=None):
+def _build_topic(title: str, type_name: str = "", desc: str = "", user=None,
+                 series: str = "", ep: int = 0):
     """把「手填的标题 + 指定的类型/描述」拼成 Topic。
 
     类型是**受控词表**：写错了当场报错并列出全部可选值，不要静默归到「未分类」——
@@ -113,7 +114,8 @@ def _build_topic(title: str, type_name: str = "", desc: str = "", user=None):
         log.error("  要新开一个类型：python scripts\\add_topic.py --type-desc \"…\" --type \"%s\" …", t)
         raise SystemExit(2)
     return topics_mod.Topic(title=str(title or "").strip(), type=t,
-                            desc=str(desc or "").strip())
+                            desc=str(desc or "").strip(),
+                            series=str(series or "").strip(), ep=int(ep or 0))
 
 
 def _resolve_topic(cfg, args):
@@ -130,6 +132,23 @@ def _resolve_topic(cfg, args):
     # 用户自己制定的选题池（data/topics_user.json）—— 一条命令就能加，
     # 见 scripts/add_topic.py。它并进内置池：能挑到、能按类型过滤、查重照样生效。
     user = topics.load_user_pool(topics.user_pool_path(cfg))
+
+    want_series = (str(getattr(args, "series_name", "") or "").strip()
+                   or str(getattr(args, "series", "") or "").strip())
+    if want_series and not args.topic:
+        ep = topics.next_episode(user, want_series, lambda x: history.is_used(cfg, x))
+        if ep is None:
+            names = user.series_names()
+            log.error("系列「%s」没有可做的下一集（做完了，或者这个系列还没建）", want_series)
+            log.error("  已有系列：%s", "、".join(names) or "（还没有）")
+            log.error("  看进度：run.bat series　　新建一集：python scripts\\add_topic.py "
+                      "--series \"%s\" --series-desc \"…\" --ep N --type \"…\" --title \"…\" "
+                      "--desc \"…\"", want_series)
+            raise SystemExit(2)
+        log.info("系列《%s》第 %d 集：%s", ep.series, ep.ep, ep.title)
+        log.info("  故事类型：%s（%s）", ep.type or "未分类", topics.type_desc(ep.type, user) or "—")
+        log.info("  这一期讲什么：%s", ep.desc or "（待生成）")
+        return ep
 
     if args.topic:
         # 规则先判；规则判不出来的「换了个说法」交给模型裁定（只沾边时才真的调一次）
@@ -209,6 +228,7 @@ def cmd_run(cfg, args) -> int:
         res = run(
             cfg, topic.title, keys=keys,
             topic_type=topic.type, topic_desc=topic.desc,
+            series=topic.series, series_ep=topic.ep,
             do_images=not args.no_images,
             do_video=not args.no_video,
             orientations=_orientations(cfg, args.orientation),
@@ -284,7 +304,8 @@ def cmd_plan(cfg, args) -> int:
         # 两级补全（判类型 + 生成描述）；日志由 build_outline 统一打，别在这里重复
         filled = topics.fill_levels(topic, cfg, llm)
         story = build_outline(topic.title, cfg, llm, material,
-                              topic_type=filled.type, topic_desc=filled.desc)
+                              topic_type=filled.type, topic_desc=filled.desc,
+                              series=topic.series, series_ep=topic.ep)
         audit_facts(story, cfg, llm)          # 锚点核查（和正式流程一致）
         story = write_all(story, cfg, llm)
         report(rule_check(story, cfg))
@@ -462,6 +483,8 @@ def cmd_smoke_clips(cfg, args) -> int:
     cmd = [sys.executable, str(root / "scripts" / "smoke_clips.py")]
     if getattr(args, "orientation", "both") not in (None, "both"):
         cmd += ["-o", str(args.orientation)]
+    if getattr(args, "small", False):
+        cmd += ["--small"]
     return _sp.call(cmd)
 
 
@@ -478,8 +501,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hsg", description="历史小故事：AI 写稿 + TTS 配音 + 配图字幕 → 成片")
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "plan", "probe-tts", "probe-images", "voices",
-                            "smoke", "smoke-clips", "test", "history", "agent", "topics"],
+                            "smoke", "smoke-clips", "test", "history", "agent", "topics", "series"],
                    help="默认 run")
+    p.add_argument("series_name", nargs="?", default="",
+                   help="series 命令的系列名（run.bat series \"古代十大权臣\"）")
     p.add_argument("--config", help="指定配置文件（默认项目根 config.yaml）")
 
     g = p.add_argument_group("内容")
@@ -489,6 +514,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--topic-type", dest="topic_type",
                    help="直接指定本期的 L1 故事类型（配合 -t 手填选题时用；"
                         "不填就由模型判。可选值见 run.bat topics）")
+    g.add_argument("--series", help="按系列取下一集（按集号顺序，跳过已做过的）；"
+                                    "系列用 scripts\\add_topic.py --series 建，看进度用 run.bat series")
     g.add_argument("--topic-desc", dest="topic_desc",
                    help="直接指定本期的 L2 描述（「这一期到底讲什么」；不填就由模型生成）")
     g.add_argument("--allow-duplicate", action="store_true",
@@ -507,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     g2.add_argument("--chars-per-second", type=float, dest="chars_per_second",
                     help="字/秒（覆盖 story.chars_per_second）；配合 --speed 使用")
     g2.add_argument("--no-bgm", action="store_true", help="不混背景音乐")
+    g2.add_argument("--small", action="store_true",
+                    help="小尺寸跑（内存紧的机器用：run.bat smoke-clips --small）")
     g2.add_argument("-o", "--orientation", default="both",
                     choices=["both", "portrait", "landscape"], help="输出横竖屏")
     g2.add_argument("--license-policy", dest="license_policy", choices=["clean", "mixed"],
@@ -528,6 +557,30 @@ def build_parser() -> argparse.ArgumentParser:
     g3.add_argument("--metadata", help="agent --stage 2：指定某一期的 metadata.json（默认取最新）")
     g2.add_argument("--log-level", default=None, help="DEBUG / INFO / WARNING")
     return p
+
+
+def cmd_series(cfg, args) -> int:
+    """看系列进度：哪几集已出、哪几集待做、下一集是哪一集。"""
+    from . import history, topics as topics_mod
+
+    user = topics_mod.load_user_pool(topics_mod.user_pool_path(cfg))
+    want = (str(getattr(args, "series_name", "") or "").strip()
+            or str(getattr(args, "series", "") or "").strip())
+    if want and want not in user.series_names():
+        log.error("没有这个系列：%s", want)
+        log.error("  已有系列：%s", "、".join(user.series_names()) or "（还没有）")
+        return 2
+    print()
+    print(topics_mod.series_progress(user, history.load(cfg), want))
+    if not want:
+        return 0
+    nxt = topics_mod.next_episode(user, want, lambda x: history.is_used(cfg, x))
+    if nxt:
+        print(f"下一集：第 {nxt.ep} 集《{nxt.title}》")
+        print(f"  出稿：run.bat agent --stage 1 --series \"{want}\"")
+    else:
+        print(f"《{want}》已经做完或用光了。")
+    return 0
 
 
 def cmd_topics(cfg, args) -> int:
@@ -585,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe-images": cmd_probe_images, "voices": cmd_voices,
         "smoke": cmd_smoke, "smoke-clips": cmd_smoke_clips,
         "test": cmd_test, "history": cmd_history,
-        "agent": cmd_agent, "topics": cmd_topics,
+        "agent": cmd_agent, "topics": cmd_topics, "series": cmd_series,
     }
     return handlers[args.command](cfg, args)
 

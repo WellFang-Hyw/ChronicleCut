@@ -58,6 +58,10 @@ class Story:
     topic: str
     # 选题是两级的：类型（高层描述，决定「写哪一路故事」）+ 详细标题与描述。
     # 类型也用来让选题避开连着做同一类，所以必须落到产物里（metadata/生成记录）。
+    # 系列（如「古代十大权臣」）：进画面 kicker、封面、metadata 与生成记录，
+    # 观众才能看出这是系列、第几集；系列进度也靠它统计。
+    series: str = ""
+    series_ep: int = 0
     topic_type: str = ""            # L1 故事类型
     topic_type_desc: str = ""       # L1 的高层描述
     topic_desc: str = ""            # L2 与故事相关性最高的描述

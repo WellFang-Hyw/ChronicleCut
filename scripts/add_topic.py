@@ -58,6 +58,9 @@ def do_list(pool: T.UserPool) -> int:
         print("（还是空的。加一条：python scripts\\add_topic.py --type \"刑狱与流放\" "
               "--title \"…\" --desc \"…\"）")
         return 0
+    eps = pool.episodes()
+    if eps:
+        print(f"（其中系列条目 {len(eps)} 集，用 run.bat series 看进度）")
     by_type: dict[str, list[T.Topic]] = {}
     for t in pool.topics:
         by_type.setdefault(t.type or T.UNKNOWN_TYPE, []).append(t)
@@ -90,6 +93,22 @@ def do_add(a, pool: T.UserPool) -> int:
     title = str(a.title or "").strip()
     desc = str(a.desc or "").strip()
     mode = str(a.mode or "small")
+    series = str(getattr(a, "series", "") or "").strip()
+    ep = int(getattr(a, "ep", 0) or 0)
+    if series:
+        if ep <= 0:
+            print("✗ 系列片必须给 --ep（集号，1 起）")
+            return 2
+        if getattr(a, "series_desc", None):
+            pool.series[series] = str(a.series_desc).strip()
+            print(f"✓ 系列《{series}》已记录（说明 {len(str(a.series_desc).strip())} 字）")
+        elif series not in pool.series:
+            pool.series[series] = ""
+            print(f"⚠ 《{series}》还没有系列说明，补上更好：--series-desc \"这个系列讲什么\"")
+        same = [t for t in pool.episodes(series) if t.ep == ep]
+        if same:
+            print(f"✗ 第 {ep} 集已经有了：{same[0].title}")
+            return 2
     if not title:
         print("✗ 必须给 --title")
         return 2
@@ -103,11 +122,16 @@ def do_add(a, pool: T.UserPool) -> int:
     if len(desc) < 15:
         print(f"⚠ 描述只有 {len(desc)} 字，偏短（建议 35-60 字）。"
               "留空也行 —— 出稿时会由模型生成")
-    pool.topics.append(T.Topic(type=ttype, title=title, desc=desc, mode=mode))
+    pool.topics.append(T.Topic(type=ttype, title=title, desc=desc, mode=mode,
+                               series=series, ep=ep))
     q = T.save_user_pool(pool)
-    print(f"✓ 已加入（{ttype} · {mode}）：{title}")
+    where = f"《{series}》第 {ep} 集" if series else f"{ttype} · {mode}"
+    print(f"✓ 已加入（{where}）：{title}")
     print(f"  文件：{q}")
-    print("  看效果：run.bat topics　　直接跑：run.bat -t \"" + title + "\"")
+    if series:
+        print(f"  看进度：run.bat series \"{series}\"　　出稿：run.bat agent --stage 1 --series \"{series}\"")
+    else:
+        print("  看效果：run.bat topics　　直接跑：run.bat -t \"" + title + "\"")
     return 0
 
 
@@ -166,6 +190,9 @@ def main() -> int:
     ap.add_argument("--title", help="L2 标题（15-30 字，小切口：具体疑问）")
     ap.add_argument("--desc", help="L2 描述（35-60 字，这一期到底讲什么；别写数字与结论）")
     ap.add_argument("--mode", choices=["small", "event"], help="切入方式（默认 small）")
+    ap.add_argument("--series", help="系列名（如「古代十大权臣」）")
+    ap.add_argument("--series-desc", dest="series_desc", help="这个系列讲什么（建第一集时给一次）")
+    ap.add_argument("--ep", type=int, help="系列集号（1 起；系列片必须给）")
     ap.add_argument("--list", action="store_true", help="列出自己写的选题")
     ap.add_argument("--remove", help="按标题删除一条")
     ap.add_argument("--check", action="store_true", help="体检自己写的选题")
