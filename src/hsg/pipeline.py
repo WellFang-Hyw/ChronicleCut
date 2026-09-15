@@ -454,6 +454,55 @@ def run(
 
 
 # ---------------------------------------------------------------- 渲染
+def chapter_spans(timeline: list[tuple[float, int]], start_at: float,
+                  total: float) -> list[tuple[float, float]]:
+    """把「(片段时长, 章节号)」时间轴换算成每章在 **BGM 时间轴**上的 (起, 止)。
+
+    BGM 时间轴的 0 = 音乐开始那一刻（也就是 start_at），所以整体减掉 start_at；
+    音乐开始之前的部分（片头）并入第 1 章。章节号为 0 的片段（片头/片尾）不单独
+    成段 —— 片头并进第 1 章、片尾并进最后一章，音乐从头铺到尾不断档。
+    """
+    starts: dict[int, float] = {}
+    t = 0.0
+    for dur, ch in timeline:
+        if ch and ch not in starts:
+            starts[ch] = t
+        t += dur
+    order = sorted(starts)
+    spans: list[tuple[float, float]] = []
+    for i, ch in enumerate(order):
+        s = max(0.0, starts[ch] - start_at)
+        e = (max(s, starts[order[i + 1]] - start_at) if i + 1 < len(order)
+             else max(s, total - start_at))
+        spans.append((s, e))
+    return spans
+
+
+def _pick_bed(cfg: Config, workdir: Path, timeline: list[tuple[float, int]],
+              total: float, start_at: float) -> Path:
+    """挑这一次要用的 BGM 轨：配了 playlist 就按章节交替拼一条，否则用单曲。"""
+    root = cfg.paths.get_path("data_dir").parent
+
+    def resolve(p: object) -> Path:
+        q = Path(str(p))
+        return q if q.is_absolute() else (root / q)
+
+    pc = cfg.bgm.get("playlist") or {}
+    if bool(pc.get("enabled", False)):
+        files = [resolve(f) for f in (pc.get("files") or [])]
+        spans = chapter_spans(timeline, start_at, total)
+        # 归一化结果与拼好的轨都缓存在固定目录：竖屏/横屏共用一份，
+        # 不然两个朝向会各做一遍归一化、各拼一条一模一样的轨。
+        cache = cfg.paths.get_path("data_dir") / "bgm" / "bed"
+        bed = video.build_playlist_bed(cache, files, spans, total - start_at, cfg)
+        if bed:
+            log.info("BGM 模式：按章节交替（%d 首轮换 %d 章）", len(files), len(spans))
+            return bed
+        log.warning("BGM 交替没拼成（%d 首 / %d 章），退回单曲模式",
+                    len(files), len(spans))
+    return resolve(cfg.bgm.get("file", ""))
+
+
 def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Path | None]:
     """渲染一个朝向：返回 (成片路径, 封面路径或 None)。"""
     v = cfg.video
@@ -469,6 +518,9 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
 
     scenes = [s for s in story.all_scenes if s.duration > 0]
     names: list[str] = []
+    # 每个片段的 (时长, 章节号)：BGM 按章节交替时要靠它算每章在成片里的起止。
+    # 章节号 0 = 片头/片尾（不属于任何一章）。
+    timeline: list[tuple[float, int]] = []
 
     # ---- 片头
     if bool(v.get("intro", True)):
@@ -485,6 +537,7 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
         ass = build_ass(cues, dur, slide_root / "intro.ass", size, cfg) if sc_enabled else None
         names.append(_encode(seg_root, "intro", bg, fg, p, ass, size, dur, cfg,
                              fade_in=fade, fade_out=fade, mode=0))
+        timeline.append((dur, 0))
 
     # ---- 正文分镜
     for s in scenes:
@@ -508,6 +561,7 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
             fade_out=fade if is_last else 0.0,
             mode=s.index,
         ))
+        timeline.append((dur, s.chapter_index))
 
     # ---- 片尾
     if bool(v.get("outro", True)):
@@ -521,6 +575,7 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
         silence = video.make_silence(seg_root / "outro_silence.m4a", outro_dur, cfg)
         names.append(_encode(seg_root, "outro", bg, fg, silence, None, size, outro_dur, cfg,
                              fade_in=fade, fade_out=fade, mode=2))
+        timeline.append((outro_dur, 0))
 
     master = video.concat_segments(seg_root, names, f"_concat_{orient}.mp4")
     total = video.media_duration(master)
@@ -531,25 +586,23 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
              (info.get("video") or {}).get("fps"),
              (info.get("audio") or {}).get("codec") or "无")
 
-    # ---- BGM（可选）
+    # ---- BGM（可选）：单曲铺满，或按章节交替多首
     final_src = master
     if bool(cfg.bgm.get("enabled", False)):
-        bgm = Path(str(cfg.bgm.get("file", "")))
-        # 相对路径按项目根目录解析（config 里的 data/bgm/xxx.mp3 是这么写的）
-        bgm = bgm if bgm.is_absolute() else (cfg.paths.get_path("data_dir").parent / bgm)
-        if bgm.exists():
-            start_at = 0.0
-            mode = str(cfg.bgm.get("start_mode", "after_intro"))
-            if mode == "after_intro":
-                first = names[0] if names else ""
-                first_dur = video.media_duration(seg_root / first) if first else 0.0
-                start_at = first_dur + float(cfg.bgm.get("start_padding", 0.4))
-            elif mode == "custom":
-                start_at = float(cfg.bgm.get("start_at", 0.0))
-            final_src = video.mix_bgm(seg_root, master.name, bgm, f"_mixed_{orient}.mp4",
+        start_at = 0.0
+        mode = str(cfg.bgm.get("start_mode", "after_intro"))
+        if mode == "after_intro":
+            first = names[0] if names else ""
+            first_dur = video.media_duration(seg_root / first) if first else 0.0
+            start_at = first_dur + float(cfg.bgm.get("start_padding", 0.4))
+        elif mode == "custom":
+            start_at = float(cfg.bgm.get("start_at", 0.0))
+        bed = _pick_bed(cfg, seg_root, timeline, total, start_at)
+        if bed and bed.exists():
+            final_src = video.mix_bgm(seg_root, master.name, bed, f"_mixed_{orient}.mp4",
                                       cfg, total, start_at=start_at)
         else:
-            log.warning("BGM 已启用但找不到文件：%s（跳过）", bgm)
+            log.warning("BGM 已启用但找不到文件：%s（跳过）", bed)
 
     stamp = datetime.now().strftime("%Y%m%d")
     out_dir = cfg.paths.get_path("output_dir")

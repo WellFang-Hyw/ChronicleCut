@@ -421,6 +421,29 @@ bgm:
   #   （运动/励志向，与历史题材气质不合，当初只是「接线验证用」）
   #   来源与许可留痕见 data/bgm/来源与许可.md
 
+  # ---- 多曲交替：一期视频里按章节轮换多首 BGM（2026-09-15 新增）----
+  # 用法：files 里按顺序排，第 i 章用 files[i % 首数]，章与章之间交叉淡化。
+  # 6 章 + 3 首 → 第 1、4 章第一首，第 2、5 章第二首，第 3、6 章第三首。
+  #
+  # ⚠️ 交替之前**必须**归一化响度，这一步程序会自动做，但你要知道为什么：
+  #    候选曲之间的录制电平能差 20 dB（实测候选 3 Relax Beat 整轨 mean_volume
+  #    -33.0 dB、候选 8 Voxscape -12.8 dB）。不归一化，低电平那首在 0.08 音量下
+  #    等于静音 —— 听感就是「音乐放到那一章突然消失了」。
+  #    做法：EBU R128 两遍法，统一拉到 loudness 指定的 LUFS；
+  #    归一化结果缓存在 data/bgm/bed/norm/，拼好的轨缓存在 data/bgm/bed/，
+  #    同一套曲子 + 同一段时间轴只算一次（竖屏/横屏共用）。
+  #
+  # 换曲目：把 files 换成你想轮换的那几首即可（路径相对项目根目录）。
+  # 关掉交替、回到单曲：playlist.enabled: false（或删掉这一段）。
+  playlist:
+    enabled: true
+    files:
+      - "data/bgm/playlist/01_relax_beat.mp3"
+      - "data/bgm/playlist/02_sleepy_cat.mp3"
+      - "data/bgm/playlist/03_voxscape.mp3"
+    crossfade: 2.5          # 章与章之间的交叉淡化秒数（硬切在闷垫↔亮垫之间会咔一下）
+    loudness: -18.0         # 统一响度目标（LUFS）
+
 # ---------- 10. 路径 ----------
 paths:
   data_dir: "data"

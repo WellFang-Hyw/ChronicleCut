@@ -93,7 +93,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（189 项，不调 API）
+run.bat test                              :: 零成本回归测试（203 项，不调 API）
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
@@ -103,7 +103,7 @@ python scripts\rerender.py                :: 复用文稿+语音，只重做配�
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
 
-**改完代码先跑 `run.bat test`**（189 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（203 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -140,6 +140,15 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
    为什么立这条：上一轮靠视觉模型目测，把「标语距离底 11.6%」判成了「约 10%，安全」，
    结论正好相反。同理，标题折行这类回归也要靠断言钉住（`media.cover_title_fit`），
    在图上看不出「怎/样」和「怎样」的区别。
+10. **多曲交替 BGM（`bgm.playlist`）必须做两件事，少一件听感就崩：**
+    ① **响度归一化**（`video.normalize_loudness`，EBU R128 两遍法到 -18 LUFS）——
+       候选曲的录制电平能差 21 dB（实测 Relax Beat 整轨 -33.0 dB vs Voxscape -12.8 dB）。
+       不归一化，低电平那首在 `volume: 0.08` 下等于静音，听感就是「音乐到那一章消失了」。
+    ② **按「有声区间」切片**（`video.safe_window`）—— 有的曲子开头一大段是无声铺垫
+       （Voxscape 开头 42 秒），按 0 偏移切片，用到它的那一章开头就是静音。
+       阈值取中位数 60% 而不是 50%：50% 会把已衰减的尾段也算进"有声"，交叉淡化处会软塌。
+    验收：拼完扫 1 秒窗 RMS 包络，**静音洞必须为 0**
+    （脚本 `data/tmp/verify_playlist_bed.py`，0 API 成本）。
 
 ---
 

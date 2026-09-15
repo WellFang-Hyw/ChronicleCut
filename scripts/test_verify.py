@@ -687,6 +687,71 @@ def test_cover() -> None:
     src.unlink(missing_ok=True)
 
 
+def test_playlist_bgm() -> None:
+    """按章节交替 BGM：区间换算、降级路径、有声区间判定。
+
+    这一套是 2026-09-15 加的（用户要求 3/7/8 三首按章节交替）。
+    两个坑都在这几条断言里：电平差 21 dB 的曲子交替会有一段变静音；
+    Voxscape 开头 42 秒是无声铺垫，从 0 偏移切片那一章就是静音。
+    """
+    print("\n[BGM 交替 pipeline.chapter_spans / video.build_playlist_bed]")
+    from hsg import pipeline, video
+
+    # ---- 区间换算（纯函数）----
+    # 片头 40s + 第1章 30+30 + 第2章 35+35 = 170s；BGM 从 40.4s 起
+    tl = [(40.0, 0), (30.0, 1), (30.0, 1), (35.0, 2), (35.0, 2)]
+    spans = pipeline.chapter_spans(tl, 40.4, 170.0)
+    check("片头并进第 1 章、整体减掉 BGM 起点",
+          [[round(s, 1), round(e, 1)] for s, e in spans], [[0.0, 59.6], [59.6, 129.6]])
+    # 没有片头（start_at=0）
+    spans2 = pipeline.chapter_spans([(30.0, 1), (30.0, 1), (35.0, 2), (35.0, 2)], 0.0, 130.0)
+    check("没有片头时直接从 0 开始",
+          [[round(s, 1), round(e, 1)] for s, e in spans2], [[0.0, 60.0], [60.0, 130.0]])
+    # 片尾并入最后一章（音乐铺到片尾结束）
+    # 片头 40s + 第1章 30s + 第2章 30s + 片尾 8s = 108s，BGM 从 40.4s 起
+    tl3 = [(40.0, 0), (30.0, 1), (30.0, 2), (8.0, 0)]
+    spans3 = pipeline.chapter_spans(tl3, 40.4, 108.0)
+    check("片尾并入最后一章（音乐铺到成片结束）",
+          [[round(s, 1), round(e, 1)] for s, e in spans3], [[0.0, 29.6], [29.6, 67.6]])
+    check_true("最后一段的右端 = 成片总长 − BGM 起点（片尾没被漏掉）",
+               abs(spans3[-1][1] - (108.0 - 40.4)) < 0.01, f"→ {spans3[-1][1]:.1f}")
+    check("只有一章时也只有一段",
+          len(pipeline.chapter_spans([(5.0, 1), (5.0, 1)], 0.0, 10.0)), 1)
+    check("空时间轴不炸", pipeline.chapter_spans([], 0.0, 10.0), [])
+
+    # ---- 降级路径（拼不起来就交回单曲模式）----
+    cfg = load_config()
+    tmpd = ROOT / "data/tmp"
+    check("曲子不足 2 首 → None",
+          video.build_playlist_bed(tmpd, [tmpd / "nope_a.mp3"], [(0, 10), (10, 20)], 20, cfg), None)
+    check("章节不足 2 段 → None",
+          video.build_playlist_bed(tmpd, [tmpd / "nope_a.mp3", tmpd / "nope_b.mp3"],
+                                   [(0, 10)], 20, cfg), None)
+    check("文件都不存在 → None（退回单曲）",
+          video.build_playlist_bed(tmpd, [tmpd / "nope_a.mp3", tmpd / "nope_b.mp3"],
+                                   [(0, 10), (10, 20)], 20, cfg), None)
+
+    # ---- 配置与素材 ----
+    pc = cfg.bgm.get("playlist") or {}
+    check_true("配置里启用了交替", bool(pc.get("enabled")))
+    files = [ROOT / str(f) for f in (pc.get("files") or [])]
+    check_true("交替曲目 3 首且文件都在",
+               len(files) == 3 and all(f.exists() for f in files),
+               f"→ {[f.name for f in files]}")
+
+    # ---- 有声区间（真实文件，零 API）----
+    vx = ROOT / "data/bgm/playlist/03_voxscape.mp3"
+    if vx.exists():
+        lo, hi = video.safe_window(vx)
+        check_true("Voxscape 开头一大段是无声铺垫（有声区间不从 0 开始）",
+                   lo > 30.0, f"lo={lo:.1f}s")
+        check_true("有声区间右端不超过曲子长度",
+                   hi <= video.media_duration(vx) + 0.1, f"hi={hi:.1f}s")
+        check_true("有声区间长度够铺一章（>60s）", hi - lo > 60.0, f"{hi - lo:.1f}s")
+    else:
+        print("  （跳过 Voxscape 有声区间测试：文件不在）")
+
+
 def test_scene_kinds() -> None:
     """分镜画面类型判定 + 按类型分派风格后缀。
 
@@ -864,6 +929,7 @@ def main() -> int:
     test_renumber_and_feedback()
     test_tts_speed_plumbing()
     test_cover()
+    test_playlist_bgm()
     test_scene_kinds()
     test_scene_query_translation()
     test_generate_image_prompt()

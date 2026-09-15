@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
+import array
+import hashlib
+import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -242,6 +246,173 @@ def mix_bgm(
     log.info("背景音乐已混入：%s（音量 %.2f，%s，淡出 %.1fs）", bgm_path.name, vol,
              f"{start_at:.1f}s 处淡入 {fi:.1f}s" if start_at > 0 else f"开头淡入 {fi:.1f}s", fo)
     return workdir / out_name
+
+
+# ---------------------------------------------------------------- 多曲交替 BGM
+# 需求：一期视频里按章节轮换多首 BGM（用户 2026-09-15 指定）。
+# 有两件事必须做，否则听感直接崩：
+#   ① **响度归一化**：曲目录制电平能差 20 dB（实测候选 3 Relax Beat 整轨
+#      mean_volume -33.0 dB、候选 8 Voxscape -12.8 dB）。不归一化，低电平那首
+#      在 0.08 音量下等于静音 —— 听感就是「音乐到那一章突然消失了」。
+#   ② **章与章之间交叉淡化**：硬切在「436Hz 闷垫」切到「1248Hz」时会咔一下。
+
+
+def _loudness(path: Path) -> dict:
+    """EBU R128 第一遍：只分析不编码，读回输入响度（给两遍法的第二遍用）。"""
+    p = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
+         "-af", "loudnorm=I=-18:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    m = re.search(r"\{[^{}]*\"input_i\"[\s\S]*?\}",
+                  (p.stdout or "") + (p.stderr or ""))
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(0))
+    except ValueError:
+        return {}
+
+
+def normalize_loudness(src: Path, dest: Path, target_i: float = -18.0,
+                       target_tp: float = -1.5) -> dict:
+    """两遍法把一首曲子归一到统一响度，返回测量记录（留档用）。"""
+    first = _loudness(src)
+    if first.get("input_i"):
+        af = ("loudnorm=I={i}:TP={tp}:LRA=11:measured_I={mi}:measured_TP={mtp}:"
+              "measured_LRA={mlra}:measured_thresh={mth}:offset={off}:linear=true"
+              ).format(i=target_i, tp=target_tp, mi=first["input_i"],
+                       mtp=first["input_tp"], mlra=first["input_lra"],
+                       mth=first.get("input_thresh", -70),
+                       off=first.get("target_offset", 0))
+    else:
+        af = f"loudnorm=I={target_i}:TP={target_tp}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(["-i", str(src), "-af", af, "-c:a", "libmp3lame", "-b:a", "192k",
+                str(dest)], cwd=dest.parent, desc="loudnorm")
+    in_i = float(first.get("input_i") or 0.0)
+    rec = {"src": src.name, "out": dest.name, "in_i": first.get("input_i"),
+           "in_tp": first.get("input_tp"), "gain_db": round(target_i - in_i, 1)}
+    log.info("BGM 响度归一化：%s → %s（输入 %.1f LUFS，增益 %+.1f dB → %.0f LUFS）",
+             src.name, dest.name, in_i, rec["gain_db"], target_i)
+    return rec
+
+
+def ensure_normalized(src: Path, norm_dir: Path, target_i: float = -18.0) -> Path:
+    """归一化并**缓存**（同一首 + 同一目标只算一次，结果落在 norm_dir）。"""
+    dest = norm_dir / f"{src.stem}_norm.mp3"
+    if not dest.exists() or dest.stat().st_size < 100_000:
+        normalize_loudness(src, dest, target_i)
+    return dest
+
+
+def rms_windows(path: Path, sr: int = 8000, win_s: float = 1.0) -> list[float]:
+    """整轨的 1 秒窗 RMS 包络（用来找"哪里真的有声音"）。"""
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+                        "-f", "s16le", "-ac", "1", "-ar", str(sr), "-"],
+                       capture_output=True)
+    data = array.array("h")
+    data.frombytes(p.stdout[:len(p.stdout) // 2 * 2])
+    win = int(sr * win_s)
+    out: list[float] = []
+    for i in range(0, len(data) - win, win):
+        blk = data[i:i + win]
+        out.append((sum(float(x) * x for x in blk) / win) ** 0.5)
+    return out
+
+
+def safe_window(path: Path) -> tuple[float, float]:
+    """一首曲子里「真的有声音」的区间 [起, 止]（秒），避开开头/结尾的静音铺垫。
+
+    为什么必须算：实测候选 8 Voxscape 开头十几秒近乎无声（波形从 0 缓慢淡入）。
+    按章节切片时若从 0 开始取，用到它的那一章前 15 秒就是静音 ——
+    听感上正是用户要避免的「音乐突然消失」。实测踩到过：
+    交替轨第 3 章（Voxscape）开头扫出 8 个以上静音窗。
+
+    判据：1 秒窗 RMS 首次/末次达到中位数 60% 的位置，右端再留 1 秒。
+    阈值取 0.6 而不是 0.5：0.5 会把曲子已经明显衰减的尾段也算进"有声区间"，
+    切片蹭到那段，交叉淡化处会出现一个 -10 dB 的软塌（实测踩到过）。
+    """
+    env = rms_windows(path)
+    dur = media_duration(path)
+    if not env:
+        return 0.0, dur
+    med = sorted(env)[len(env) // 2]
+    hit = [i for i, v in enumerate(env) if v >= med * 0.6]
+    if not hit:
+        return 0.0, dur
+    lo = float(hit[0])
+    hi = max(lo + 1.0, float(hit[-1] + 1) - 1.0)
+    return lo, min(hi, dur)
+
+
+def build_playlist_bed(out_dir: Path, playlist: list[Path],
+                       spans: list[tuple[float, float]], total: float,
+                       cfg: Config) -> Path | None:
+    """按章节把多首曲子拼成一条铺满全片的 BGM 轨（章间交叉淡化）。
+
+    spans：每章在 **BGM 时间轴**上的 (起, 止)，0 = 音乐开始那一刻
+    （由 pipeline.chapter_spans 算出来）。第 i 章用 playlist[i % N]。
+    拼不出来（文件不足 / 时长为 0）就返回 None，让调用方退回单曲模式。
+    """
+    pl = [p for p in (playlist or []) if p and Path(p).exists()]
+    usable = [(float(s), float(e)) for s, e in (spans or []) if e - s > 1.0]
+    if len(pl) < 2 or len(usable) < 2:
+        return None
+    pc = cfg.bgm.get("playlist") or {}
+    xf = max(0.0, float(pc.get("crossfade", 2.5)))
+    target_i = float(pc.get("loudness", -18.0))
+    norm_dir = out_dir / "norm"
+    tracks = [ensure_normalized(p, norm_dir, target_i) for p in pl]
+    durs = [media_duration(t) for t in tracks]
+    if any(d <= 5.0 for d in durs):
+        log.warning("BGM 交替：有曲子读不出时长，退回单曲")
+        return None
+    # 每首的"有声区间"：切片只用这段，避开开头/结尾的静音铺垫
+    wins = [safe_window(t) for t in tracks]
+    for t, (lo, hi) in zip(tracks, wins):
+        if lo > 1.0 or hi < media_duration(t) - 1.0:
+            log.info("BGM 交替：%s 的有效区间 %.1fs–%.1fs（头尾静音已避开）",
+                     t.name, lo, hi)
+
+    key = hashlib.md5(json.dumps(
+        {"tracks": [t.name for t in tracks],
+         "spans": [[round(s, 2), round(e, 2)] for s, e in usable],
+         "safe": [[round(a, 2), round(b, 2)] for a, b in wins],
+         "xf": xf, "total": round(total, 2), "v": 2}).encode()).hexdigest()[:12]
+    bed = out_dir / f"_bed_{key}.mp3"
+    if bed.exists() and bed.stat().st_size > 100_000:
+        log.debug("复用已拼好的 BGM 交替轨：%s", bed.name)
+        return bed
+
+    args: list[str] = []
+    parts: list[str] = []
+    for i, (s, e) in enumerate(usable):
+        idx = i % len(pl)
+        seg_len = (e - s) + (xf if i < len(usable) - 1 else 0.0)
+        # 同一首被轮到第二次时接着上一段往后取，避免每次都从头放同一段；
+        # 但起点必须落在"有声区间"内，且整段不能超出区间右端
+        # （超了就贴到边界，宁可有重叠也不去取静音头/静音尾）
+        lo, hi = wins[idx]
+        want = (i // len(pl)) * (e - s)
+        off = lo + min(want, max(0.0, (hi - lo) - seg_len - 0.5))
+        args += ["-ss", f"{off:.3f}", "-t", f"{seg_len:.3f}", "-i", str(tracks[idx])]
+        parts.append(f"[{i}:a]")
+
+    if len(parts) == 1:
+        fg = f"{parts[0]}atrim=0:{total:.3f}[out]"
+    else:
+        fg = (parts[0] + parts[1] +
+              f"acrossfade=d={xf:.2f}:c1=tri:c2=tri[a1]")
+        for i in range(2, len(parts)):
+            fg += f";[a{i - 1}]{parts[i]}acrossfade=d={xf:.2f}:c1=tri:c2=tri[a{i}]"
+        fg += f";[a{len(parts) - 1}]atrim=0:{total:.3f}[out]"
+
+    run_ffmpeg([*args, "-filter_complex", fg, "-map", "[out]",
+                "-c:a", "libmp3lame", "-b:a", "192k", str(bed)],
+               cwd=out_dir, desc="playlist_bed")
+    log.info("BGM 交替轨：%s（%d 章 × %d 首，交叉淡化 %.1fs，目标 %.0f LUFS）",
+             bed.name, len(usable), len(pl), xf, target_i)
+    return bed
 
 
 def probe_streams(path: Path) -> dict:
