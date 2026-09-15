@@ -64,17 +64,19 @@ def make_silence(path: Path, duration: float, cfg: Config) -> Path:
     拼接出来的成片音轨会比视频短（实测 443.1s vs 447.1s）——
     有些播放器会在音轨结束时停住，最后几秒的片尾就看不到了。
     补一条等长静音轨，两条流长度一致。
+
+    ⚠️ 编码器跟**扩展名**走，不跟 `video.audio_codec` 走：
+    把 AAC 塞进 `.mp3` 容器会直接失败，而 ffmpeg 的报错会被吞掉，
+    只剩一个看不懂的退出码（冒烟测试里踩到过）。所以：
+    `.mp3` → libmp3lame，其余（`.m4a`/`.aac`）→ aac。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i",
-         f"anullsrc=r={cfg.video.get('audio_sample_rate', 48000)}:cl=stereo",
-         "-t", f"{duration:.3f}", "-c:a",
-         "aac" if str(cfg.video.get("audio_codec", "aac")) == "aac" else "libmp3lame",
-         str(path)],
-        check=True, capture_output=True,
-    )
+    codec = "libmp3lame" if path.suffix.lower() == ".mp3" else "aac"
+    # 用 run_ffmpeg 而不是裸 subprocess：失败时会把 ffmpeg 的 stderr 带出来
+    run_ffmpeg(["-f", "lavfi", "-i",
+                f"anullsrc=r={cfg.video.get('audio_sample_rate', 48000)}:cl=stereo",
+                "-t", f"{duration:.3f}", "-c:a", codec, path.name],
+               cwd=path.parent, desc=f"静音轨 {path.name}")
     return path
 
 

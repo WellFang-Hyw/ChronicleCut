@@ -93,7 +93,8 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（287 项，不调 API）
+run.bat test                              :: 零成本回归测试（332 项，不调 API）
+run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
 python scripts\clone_voice.py --list      :: 列出账号下的克隆音色
@@ -106,12 +107,14 @@ python scripts\rerender.py                :: 复用文稿+语音，只重做配�
 python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带是否重叠
 ```
 
-**影视切片的工作流（顺序不能颠倒）**：
-`run.bat plan -t "题材"` → `python scripts\make_needs.py`（出槽位工作单）
-→ 人工按单剪片段 → `python scripts\import_clip.py` 绑槽位 → 渲染。
+**影视切片的工作流（顺序不能颠倒，入口是 `run.bat agent`）**：
+`run.bat agent --stage 1 -t "题材"`（脚本 + 素材需求清单，然后停下）
+→ 人工按单剪片段 → `python scripts\import_clip.py` 绑槽位
+→ `run.bat agent --stage 2`（AI 排镜头 → 渲染 → 自检 → 成片）。
 需求清单必须排在剪素材**之前**：剪素材是最慢的人工环节，先剪后配会剪一堆用不上的。
+架构与分工见 `docs\Agent应用架构.md`。
 
-**改完代码先跑 `run.bat test`**（287 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（332 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -189,6 +192,33 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
     第一次阈值 24 秒把 38/58 个槽位标成必须；第二次改 30 秒，又被 plan 阶段
     ~31 秒/场的估算全命中（9 场戏全标必须）。优先级一泛滥就等于没有优先级。
     同理，每个分镜只有**第 1 段**标必须，第 2 段起标「↺ 复用」（素材粒度 = 分镜）。
+16. **切片路线必须走阶段闸门，而且阶段 2 绝不重写字稿**（`hsg/agent.py`）：
+    `run.bat agent`（看卡在哪）→ `--stage 1 -t "题材"`（出脚本 + 素材需求清单，停下）
+    → 人工剪素材并 `import_clip.py` 绑槽位 → `--stage 2`（AI 排镜头 + 渲染 + 自检）。
+    为什么阶段 2 不改稿：脚本在阶段 1 已经出给人看过，人也照着它剪了素材；
+    阶段 2 再「顺手优化」就是背刺，剪好的素材当场对不上。时长跑出区间只告警。
+17. **剪辑表里的素材只认显式绑定的槽位**（`edl.scene_candidates`，`edl.allow_era_match`
+    默认 false）：不许用「按年代/人物搜到的」顶替没剪素材的分镜。
+    那是替用户做**创作和版权决策**，而且会顶穿切片占比红线
+    （实测：6 场里 4 场没绑素材，却被自动塞进同年代切片 → 占比 97.7% > 45%）。
+    「同年代有候选」只能当提示，不能进剪辑表。
+18. **单段 10 秒上限只管影视切片**（`kind` = clip/reuse）。静态图/生成图镜头不受它约束 ——
+    老流水线里一个 25 秒的分镜就是一张图加缓移，画面并不「引用」谁。
+    （判据一开始写成对所有镜头生效，回归测试当场把 12.55 秒的静态镜头报成红线。）
+19. **音轨一致性两条**（都属于「成片放出来没声音、日志里看不出异常」那一类）：
+    ① **片头段必须有音轨**，哪怕只是静音 —— `concat -c copy` 遇到第一个文件没有音频流时，
+       会把整条成片的音轨全丢掉（片尾早就补过静音轨，片头这条是冒烟测试发现的）。
+    ② **静音轨的编码器跟扩展名走**，不跟 `video.audio_codec` 走：把 AAC 塞进 `.mp3`
+       容器会直接失败，而 `subprocess.run(capture_output=True)` 会把 ffmpeg 的报错吞掉，
+       只剩一个看不懂的退出码。`make_silence` 现在按后缀选编码器，并且改用 `run_ffmpeg`。
+20. **送进 ffmpeg 滤镜的路径只能是相对文件名**：`subtitles=f=...` 里的反斜杠和冒号会被
+    滤镜解析器吃掉，报出来的错完全不像人话
+    （实测 `No option name near 'Resourcescodehistorical_story_gendatasegments...'`）。
+    `shotvideo.finish_scene` 会当场拦下绝对路径，别把拦下来的错当误报。
+21. **画面位置类改动必须按像素验收**（延续护栏 9）：`frames.ink_band` 数某个横条里
+    有多少不透明像素；`scripts/smoke_clips.py` 里还有一条「竖屏中间清晰带的高频能量
+    必须显著高于上下模糊衬底」的判据（实测 5.8×）。
+    为什么不能靠看图：合成素材是大色块时，模糊与否**长得一模一样**（看图什么都看不出来）。
 
 ---
 

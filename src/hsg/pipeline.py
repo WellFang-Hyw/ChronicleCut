@@ -15,9 +15,12 @@ from pathlib import Path
 
 from concurrent.futures import ThreadPoolExecutor
 
+from . import clips as clips_mod
+from . import edl as edl_mod
+from . import frames
 from . import history as history_mod
 from . import images as images_mod
-from . import media, tts as tts_mod, verify, video
+from . import media, shotvideo, tts as tts_mod, verify, video
 from .config import ApiKeys, Config, ensure_dirs, get_channel, provider_banner
 from .llm import LLM
 from .material import fetch_material
@@ -171,6 +174,73 @@ def fit_length(
     return total
 
 
+def images_for_story(story: Story, cfg: Config, llm) -> list[dict]:
+    """给所有**有语音**的分镜配图，返回来源日志（供留档与复核）。
+
+    提取成独立函数的原因：影视切片路线的「阶段 2」（人工导入素材后续跑）也需要
+    这条链路 —— 没找到影视素材的分镜按回退方案出画面（生成图或图库图），
+    必须和主流程用**同一套**检索词翻译、画面类型分派、去重与版权标注逻辑，
+    否则两条路线的画面风格和版权状态会不一致。
+
+    里面两步都是「先规则兜底、再用一次便宜的 LLM 调用覆盖」：
+      · `translate_scene_queries`：中文检索词 → 博物馆英文索引能命中的词。
+        不翻的话中文词只发给 bing，而 clean 策略下 bing 不参与，
+        场景词完全空转，配图会退化成「章节级英文词 → 兜底泛词」（实测 18/18 如此）。
+      · `classify_scene_kinds`：分镜是「器物静物」还是「人物场景」，决定用哪套风格后缀。
+        不分派的话器物向后缀会把叙事分镜也拉成静物小品（第 7 期实测：要找坊市布局图
+        给了干裂土地、要找巡夜兵丁给了灯笼、要找衙门审案给了一把西式法槌）。
+    """
+    paths = cfg.paths
+    src_log: list[dict] = []
+    used: list[int] = []
+    workers = max(1, int(cfg.images.get("concurrency", 4)))
+    cache_dir = paths.get_path("image_dir")
+    scenes = [s for s in story.all_scenes if s.duration > 0]
+    period = ((story.period_start, story.period_end)
+              if story.period_start and story.period_end else None)
+    scene_en = images_mod.translate_scene_queries(
+        [(s.index, s.image_query) for s in scenes], cfg, llm)
+    scene_kind = images_mod.classify_scene_kinds(
+        [(s.index, s.image_query) for s in scenes], cfg, llm)
+
+    def _grab(s) -> None:
+        queries = [s.image_query]
+        queries_en: list[str] = []
+        if scene_en.get(s.index):
+            queries_en.append(scene_en[s.index])
+        ch = (story.chapters[s.chapter_index - 1]
+              if 0 < s.chapter_index <= len(story.chapters) else None)
+        if ch:
+            for q in ch.image_queries:
+                if q and q not in queries:
+                    queries.append(q)
+            queries_en += [q for q in ch.image_queries_en if q and q not in queries_en]
+        p, credit, src, attempts = images_mod.fetch_for_scene(
+            s.index, queries, cfg, cache_dir, used,
+            queries_en=queries_en, period=period,
+            kind=scene_kind.get(s.index, images_mod.KIND_OBJECT))
+        s.image_path, s.image_credit, s.image_source = p, credit, src
+        pick = next((a for a in reversed(attempts) if a.get("picked")), {}) or {}
+        s.image_license = str(pick.get("license") or "")
+        src_log.append({"scene": s.index, "queries": queries, "queries_en": queries_en,
+                        "result": p.name if p else None, "source": src,
+                        "license": s.image_license, "credit": credit,
+                        "kind": scene_kind.get(s.index),
+                        "attempts": attempts})
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(_grab, scenes))
+    images_mod.save_source_log(cache_dir / "_sources.json", src_log, cfg)
+    got = sum(1 for s in story.all_scenes if s.image_path)
+    clean = sum(1 for s in story.all_scenes if s.image_license)
+    log.info("配图完成：%d/%d 个分镜拿到图（其中 %d 张版权已标注；策略 %s）",
+             got, len(scenes), clean, cfg.images.get("license_policy"))
+    if got and clean < got:
+        log.warning("有 %d 张图的版权状态不明 —— 要公开发布请把 "
+                    "images.license_policy 设为 clean 并确认图源可用", got - clean)
+    return src_log
+
+
 # ---------------------------------------------------------------- 主流程
 def run(
     cfg: Config,
@@ -322,62 +392,10 @@ def run(
         log.warning("有 %d 段语音失败，这些分镜会被跳过（成片会短一点）",
                     len(story.all_scenes) - ok)
 
-    # ---------- 9. 配图
+    # ---------- 9. 配图（提取成函数：阶段 2 续跑时要用同一条链路）
     src_log: list[dict] = []
     if do_images:
-        used: list[int] = []
-        workers = max(1, int(cfg.images.get("concurrency", 4)))
-        cache_dir = paths.get_path("image_dir")
-        scenes = [s for s in story.all_scenes if s.duration > 0]
-        period = ((story.period_start, story.period_end)
-                  if story.period_start and story.period_end else None)
-        # 场景级英文检索词：一次便宜的 LLM 调用，把每个分镜的中文检索词翻成博物馆索引
-        # 能命中的英文词。不这么做的话中文词只发给 bing、clean 策略下 bing 不参与，
-        # 场景词完全空转，配图会退化成「章节级英文词 → 兜底泛词」（实测 18/18 如此）。
-        scene_en = images_mod.translate_scene_queries(
-            [(s.index, s.image_query) for s in scenes], cfg, llm)
-        # 分镜画面类型：决定这个分镜用「器物静物」还是「人物场景」风格后缀。
-        # 不分派的话，器物向后缀会把叙事分镜也拉成静物小品（第 7 期实测：
-        # 要找坊市布局图给了干裂土地、要找巡夜兵丁给了灯笼、要找衙门审案
-        # 给了一把西式法槌）。同样是先铺规则兜底、再用一次便宜的 LLM 调用覆盖。
-        scene_kind = images_mod.classify_scene_kinds(
-            [(s.index, s.image_query) for s in scenes], cfg, llm)
-
-        def _grab(s) -> None:
-            queries = [s.image_query]
-            queries_en: list[str] = []
-            if scene_en.get(s.index):
-                queries_en.append(scene_en[s.index])
-            ch = story.chapters[s.chapter_index - 1] if 0 < s.chapter_index <= len(story.chapters) else None
-            if ch:
-                for q in ch.image_queries:
-                    if q and q not in queries:
-                        queries.append(q)
-                queries_en += [q for q in ch.image_queries_en if q and q not in queries_en]
-            p, credit, src, attempts = images_mod.fetch_for_scene(
-                s.index, queries, cfg, cache_dir, used,
-                queries_en=queries_en, period=period,
-                kind=scene_kind.get(s.index, images_mod.KIND_OBJECT))
-            s.image_path, s.image_credit, s.image_source = p, credit, src
-            pick = next((a for a in reversed(attempts) if a.get("picked")), {}) or {}
-            s.image_license = str(pick.get("license") or "")
-            src_log.append({"scene": s.index, "queries": queries, "queries_en": queries_en,
-                            "result": p.name if p else None, "source": src,
-                            "license": s.image_license, "credit": credit,
-                            "kind": scene_kind.get(s.index),
-                            "attempts": attempts})
-
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            list(pool.map(_grab, scenes))
-        images_mod.save_source_log(cache_dir / "_sources.json", src_log, cfg)
-        got = sum(1 for s in story.all_scenes if s.image_path)
-        clean = sum(1 for s in story.all_scenes if s.image_license)
-        log.info("配图完成：%d/%d 个分镜拿到图（其中 %d 张版权已标注；策略 %s）",
-                 got, len(scenes), clean, cfg.images.get("license_policy"))
-        if got and clean < got:
-            log.warning("有 %d 张图的版权状态不明 —— 要公开发布请把 "
-                        "images.license_policy 设为 clean 并确认图源可用",
-                        got - clean)
+        src_log = images_for_story(story, cfg, llm)
 
     rows = timeline_rows(story)
     if bool(cfg.runtime.get("print_timeline", True)):
@@ -503,8 +521,124 @@ def _pick_bed(cfg: Config, workdir: Path, timeline: list[tuple[float, int]],
     return resolve(cfg.bgm.get("file", ""))
 
 
-def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Path | None]:
-    """渲染一个朝向：返回 (成片路径, 封面路径或 None)。"""
+def _rel(p: Path, base: Path) -> str:
+    """相对路径 + 正斜杠 —— ffmpeg 的输入路径用相对写法最省事（避开 Windows 转义）。"""
+    import os
+    try:
+        r = os.path.relpath(str(p), str(base))
+    except ValueError:          # 不同盘符，只能给绝对路径
+        r = str(p)
+    return r.replace("\\", "/")
+
+
+def _render_scene_shots(s, plan: dict, story: Story, cfg: Config, size: tuple[int, int],
+                        seg_root: Path, slide_root: Path, *,
+                        fade: float, sc_enabled: bool, is_first: bool, is_last: bool) -> str:
+    """按 EDL 的镜头表编出一个分镜段（这是「多镜头」的落地点）。
+
+    路径严格照 AGENTS.md 护栏 12：
+        各镜头编成**无声段** → concat 成整场画面 → 最后一次性贴回整条语音。
+    语音**绝不能**挂在第一个镜头上（会被 `-t 镜头时长` 截断，旁白直接被吃掉）。
+    """
+    channel = get_channel(cfg)
+    ch = (story.chapters[s.chapter_index - 1]
+          if 0 < s.chapter_index <= len(story.chapters) else None)
+    kicker = f"{channel} · 第{ch.index}章 {ch.heading}" if ch else channel
+    dur = float(plan.get("dur") or 0)
+    stem = f"seg_{s.index:03d}"
+    scene_dir = seg_root / stem
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    shots = plan.get("shots") or []
+
+    names: list[str] = []
+    for k, sh in enumerate(shots, 1):
+        treat = str(sh.get("treatment") or "plain")
+        sdur = max(0.2, float(sh.get("dur") or 0))
+        callout = str(sh.get("callout") or "")
+        nametag = str(sh.get("nametag") or "")
+        # 章节大标题只在这一场的第一个镜头上出现（跟原来单镜头时的行为一致）
+        title = ch.heading if (s.is_chapter_start and ch and k == 1) else ""
+        out_name = f"sh{k:02d}.mp4"
+        clip_id = str(sh.get("clip_id") or "")
+        clip_file = clips_mod.clip_file(cfg, clip_id) if clip_id else None
+        use_clip = str(sh.get("kind")) in ("clip", "reuse") and clip_file and Path(clip_file).exists()
+        if str(sh.get("kind")) in ("clip", "reuse") and not use_clip:
+            log.warning("分镜 %s 的第 %d 个镜头：素材 %s 文件不在，退回静态画面",
+                        s.index, k, clip_id or "(空)")
+
+        if use_clip:
+            if treat == "freeze_zoom":
+                # 定格放大：抽一帧、裁一块放大，然后**当静态图走原来的路径**
+                # （所以不需要任何 zoompan 滤镜，还白捡原有的缓移）
+                zoom = float(cfg.edl.get("freeze_zoom", 1.55))
+                at = float(sh.get("src_in") or 0) + min(1.2, sdur / 3)
+                still = frames.prepare_freeze(Path(clip_file), slide_root,
+                                              f"{stem}_sh{k:02d}", cfg, at=at, zoom=zoom)
+                bg, fg = media.build_layers(
+                    slide_root / f"{stem}_sh{k:02d}_bg.jpg",
+                    slide_root / f"{stem}_sh{k:02d}_fg.png", size, cfg,
+                    image_path=still, kicker=kicker, title=title, caption=s.caption,
+                    callout=callout, nametag=nametag)
+                shotvideo.encode_still_shot(
+                    scene_dir, _rel(bg, scene_dir), _rel(fg, scene_dir), out_name, size,
+                    sdur, cfg, motion_mode=s.index, fade_in=fade if is_first and k == 1 else 0.0,
+                    fade_out=fade if is_last and k == len(shots) else 0.0)
+            else:
+                fg = frames.overlay_layer(
+                    slide_root / f"{stem}_sh{k:02d}_fg.png", size, cfg, kicker=kicker,
+                    title=title, caption=s.caption, callout=callout, nametag=nametag)
+                motion = (s.index + k) if treat == "slow_push" else -1
+                shotvideo.encode_clip_shot(
+                    scene_dir, _rel(Path(clip_file), scene_dir), _rel(fg, scene_dir),
+                    out_name, size, sdur, cfg, src_in=float(sh.get("src_in") or 0),
+                    fade_in=fade if is_first and k == 1 else 0.0,
+                    fade_out=fade if is_last and k == len(shots) else 0.0,
+                    motion_mode=motion)
+        else:
+            # 回退画面：生成图/图库图 + 缓移（走和主流程完全一样的静态图链路）
+            bg, fg = media.build_layers(
+                slide_root / f"{stem}_sh{k:02d}_bg.jpg",
+                slide_root / f"{stem}_sh{k:02d}_fg.png", size, cfg,
+                image_path=s.image_path, kicker=kicker, title=title, caption=s.caption,
+                credit=s.image_credit, callout=callout, nametag=nametag)
+            shotvideo.encode_still_shot(
+                scene_dir, _rel(bg, scene_dir), _rel(fg, scene_dir), out_name, size,
+                sdur, cfg, motion_mode=s.index + k,
+                fade_in=fade if is_first and k == 1 else 0.0,
+                fade_out=fade if is_last and k == len(shots) else 0.0)
+        names.append(out_name)
+
+    silent = video.concat_segments(scene_dir, names, f"_{stem}_silent.mp4")
+
+    # ---- 贴回整条语音 + 烧字幕（一遍编码完成）
+    import shutil
+    a_name = ""
+    if s.audio_path and Path(s.audio_path).exists():
+        dst = scene_dir / "voice.mp3"
+        if Path(s.audio_path).resolve() != dst.resolve():
+            shutil.copyfile(s.audio_path, dst)
+        a_name = dst.name
+    cues = cues_for(s, cfg) if sc_enabled else []
+    ass_name = ""
+    if sc_enabled:
+        build_ass(cues, dur, scene_dir / "s.ass", size, cfg)
+        ass_name = "s.ass"
+    # ⚠️ 这里传的是**相对 scene_dir 的纯文件名**（字幕滤镜吃不下绝对路径）
+    shotvideo.finish_scene(scene_dir, silent.name, a_name or None, ass_name or None,
+                           f"{stem}.mp4", size, dur, cfg,
+                           fade_in=fade if is_first else 0.0,
+                           fade_out=fade if is_last else 0.0)
+    return f"{stem}/{stem}.mp4"
+
+
+def render_orientation(story: Story, cfg: Config, orient: str,
+                       edl: dict | None = None) -> tuple[Path, Path | None]:
+    """渲染一个朝向：返回 (成片路径, 封面路径或 None)。
+
+    `edl` 给了就按**镜头表**渲染（影视切片 + 剪辑标注，见 edl.py / shotvideo.py）；
+    不给就还是老路（一个分镜一张静态图）。两条路的片段规格一致，
+    所以片头/片尾/BGM/封面/拼接这些都不用动。
+    """
     v = cfg.video
     size = (int(v.orientations[orient].width), int(v.orientations[orient].height))
     seg_root = cfg.paths.get_path("segment_dir") / orient
@@ -517,6 +651,9 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
     channel = get_channel(cfg)
 
     scenes = [s for s in story.all_scenes if s.duration > 0]
+    plans = {int(p.get("scene") or 0): p for p in ((edl or {}).get("scenes") or [])}
+    if edl:
+        log.info("[%s] 按 EDL 渲染：%s", orient, edl_mod.describe(edl))
     names: list[str] = []
     # 每个片段的 (时长, 章节号)：BGM 按章节交替时要靠它算每章在成片里的起止。
     # 章节号 0 = 片头/片尾（不属于任何一章）。
@@ -528,6 +665,11 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
         p, dur = _tts_cached(cfg, seg_root, "intro", intro_text) if bool(
             cfg.story.get("intro_speak", True)) else (None, 0.0)
         dur = dur + float(cfg.story.get("intro_seconds_pad", 1.2)) if dur else 3.5
+        if p is None:
+            # ⚠️ 片头**必须**有音轨，哪怕只是静音：`concat -c copy` 遇到第一个文件
+            #    没有音频流时，会把整条成片的音轨全丢掉（成片放出来一点声音都没有，
+            #    而且日志里看不出异常）。片尾当初踩过同类坑，片头这条是冒烟测试补上的。
+            p = video.make_silence(seg_root / "intro_silence.m4a", dur, cfg)
         bg, fg = media.build_text_card(
             slide_root / "intro_bg.jpg", slide_root / "intro_fg.png", size, cfg,
             lines=[channel], slogan=str(v.get("intro_slogan") or ""),
@@ -547,20 +689,26 @@ def render_orientation(story: Story, cfg: Config, orient: str) -> tuple[Path, Pa
         is_first = s is scenes[0]
         is_last = s is scenes[-1]
         dur = s.duration + tail
-        bg, fg = media.build_layers(
-            slide_root / f"scene_{s.index:03d}_bg.jpg",
-            slide_root / f"scene_{s.index:03d}_fg.png",
-            size, cfg, image_path=s.image_path, kicker=kicker, title=title,
-            caption=s.caption, credit=s.image_credit,
-        )
-        cues = cues_for(s, cfg) if sc_enabled else []
-        ass = build_ass(cues, dur, slide_root / f"scene_{s.index:03d}.ass", size, cfg) if sc_enabled else None
-        names.append(_encode(
-            seg_root, f"seg_{s.index:03d}", bg, fg, s.audio_path, ass, size, dur, cfg,
-            fade_in=fade if is_first else 0.0,
-            fade_out=fade if is_last else 0.0,
-            mode=s.index,
-        ))
+        if s.index in plans:
+            # ---- 有 EDL：按镜头表渲染（切片背景 + 定格/标注）
+            names.append(_render_scene_shots(
+                s, plans[s.index], story, cfg, size, seg_root, slide_root,
+                fade=fade, sc_enabled=sc_enabled, is_first=is_first, is_last=is_last))
+        else:
+            bg, fg = media.build_layers(
+                slide_root / f"scene_{s.index:03d}_bg.jpg",
+                slide_root / f"scene_{s.index:03d}_fg.png",
+                size, cfg, image_path=s.image_path, kicker=kicker, title=title,
+                caption=s.caption, credit=s.image_credit,
+            )
+            cues = cues_for(s, cfg) if sc_enabled else []
+            ass = build_ass(cues, dur, slide_root / f"scene_{s.index:03d}.ass", size, cfg) if sc_enabled else None
+            names.append(_encode(
+                seg_root, f"seg_{s.index:03d}", bg, fg, s.audio_path, ass, size, dur, cfg,
+                fade_in=fade if is_first else 0.0,
+                fade_out=fade if is_last else 0.0,
+                mode=s.index,
+            ))
         timeline.append((dur, s.chapter_index))
 
     # ---- 片尾

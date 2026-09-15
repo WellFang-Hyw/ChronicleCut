@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from hsg import clips as clips_mod            # noqa: E402
 from hsg import needs as needs_mod            # noqa: E402
 from hsg.config import ApiKeys, ensure_dirs, load_config  # noqa: E402
-from rerender import load_story               # noqa: E402
+from hsg.storyio import load_story, recorded_durations  # noqa: E402
 
 log = logging.getLogger("hsg.make_needs")
 
@@ -73,13 +73,7 @@ def main() -> int:
     story, raw = load_story(meta, cfg, cfg.paths.get_path("audio_dir"), log)
 
     # metadata 里记着当初每一镜的实测秒数 —— 比按字数估准得多，有就用它
-    recorded: dict[int, float] = {}
-    for c in raw.get("chapters") or []:
-        for s in c.get("scenes") or []:
-            try:
-                recorded[int(s.get("index"))] = float(s.get("seconds") or 0)
-            except (TypeError, ValueError):
-                continue
+    recorded = recorded_durations(raw)
 
     index = clips_mod.load_index(Path(a.index) if a.index else clips_mod.index_path(cfg))
 

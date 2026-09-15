@@ -950,6 +950,263 @@ def test_needs() -> None:
                    not any(c in md_bad.name for c in '/\\:*?"<>|'), f"→ {md_bad.name}")
 
 
+def test_edl() -> None:
+    """剪辑表：素材绑定、排镜头、合规校验、切片占比。"""
+    print("\n[剪辑表 edl.build_edl / validate_edl]")
+    import tempfile
+
+    from hsg import clips, edl
+
+    cfg = load_config()
+    cap = float(cfg.clips.max_seconds)
+
+    # ---- 候选素材：默认只认显式绑定的（不许自动拿同年代素材顶替）
+    idx = clips.empty_index()
+    clips.add_clip(idx, {"id": "sg_a", "file": "norm/a.mp4", "title": "三国演义",
+                         "people": ["曹操"], "era": "东汉末", "dur": 8.0,
+                         "slots": ["s02_sh1", "s02_sh2"]})
+    clips.add_clip(idx, {"id": "sg_b", "file": "norm/b.mp4", "title": "赤壁",
+                         "people": ["曹操"], "era": "东汉末", "dur": 6.0})
+    got = edl.scene_candidates(idx, 2, people=["曹操"], era="东汉末")
+    check("只认绑定了本场槽位的素材", [c["id"] for c in got], ["sg_a"])
+    check("没绑槽位的场次 → 一条候选都没有",
+          edl.scene_candidates(idx, 3, people=["曹操"], era="东汉末"), [])
+    loose = edl.scene_candidates(idx, 3, people=["曹操"], era="东汉末", allow_era_match=True)
+    check("放开 allow_era_match 才会按年代兜（提示用，不该进剪辑表）",
+          sorted(c["id"] for c in loose), ["sg_a", "sg_b"])
+
+    # ---- 排镜头（规则兜底）
+    rows = [{"slot": "s02_sh1", "dur": 5.0}, {"slot": "s02_sh2", "dur": 5.0}]
+    cands = edl.scene_candidates(idx, 2, people=["曹操"], era="东汉末")
+    shots = edl._rule_shots(cands, 13.0, rows, cfg)
+    check("规则排镜头：总时长铺满分镜",
+          round(sum(s.dur for s in shots), 2), 13.0)
+    check_true("每个镜头都不超过单段上限",
+               all(s.dur <= cap + 1e-9 for s in shots), f"→ {[s.dur for s in shots]}")
+    check_true("取用区间不超出素材长度",
+               all(s.src_in + s.dur <= 8.0 + 0.05 for s in shots),
+               f"→ {[(s.src_in, s.dur) for s in shots]}")
+    check("素材用第二次起标 reuse（同场不同段落）",
+          [s.kind for s in shots], ["clip", "reuse"])
+    check_true("第二次取用的是素材中段，不从同一格开始",
+               shots[0].src_in == 0.0 and shots[1].src_in > 0, f"→ {shots[1].src_in}")
+
+    # ---- 回退镜头
+    fb = edl._fallback_shots([{"slot": "s03_sh1", "dur": 9.0, "fallback": "still"},
+                              {"slot": "s03_sh2", "dur": 8.0, "fallback": "generate"}],
+                             17.5, cfg)
+    check("回退镜头也铺满时长", round(sum(s.dur for s in fb), 2), 17.5)
+    check("回退类型跟着需求清单走（still / generate）",
+          [s.kind for s in fb], ["still", "generate"])
+    check("回退镜头一律静态图平移（没素材没什么可决策的）",
+          {s.treatment for s in fb}, {"still_pan"})
+    fb2 = edl._fallback_shots([{"slot": "s03_sh1", "dur": 4.0, "fallback": "still"}], 9.0, cfg)
+    check("槽位时长不够时补到最后一个镜头（估算误差兜底）",
+          round(sum(s.dur for s in fb2), 2), 9.0)
+
+    # ---- 整期装配
+    from hsg.models import Chapter, Scene, Story
+    story = Story(topic="三国", title="曹操杀吕伯奢", period="东汉末", chapters=[
+        Chapter(index=1, heading="逃亡路上", scenes=[
+            Scene(index=1, text="字" * 40, chapter_index=1, is_chapter_start=True),
+            Scene(index=2, text="字" * 40, chapter_index=1)]),
+        Chapter(index=2, heading="磨刀声", scenes=[
+            Scene(index=3, text="字" * 40, chapter_index=2, is_chapter_start=True)]),
+    ])
+    for s in story.all_scenes:
+        s.duration = 12.0
+    index = clips.empty_index()
+    clips.add_clip(index, {"id": "c1", "file": "norm/c1.mp4", "title": "片甲",
+                           "people": ["曹操"], "era": "东汉末", "dur": 9.0,
+                           "slots": ["s01_sh1", "s01_sh2"]})
+    needs = {"version": 1, "slots": [
+        {"slot": "s01_sh1", "scene": 1, "chapter": 1, "shot": 1, "dur": 6.0,
+         "people": ["曹操"], "era": "东汉末", "fallback": "generate", "callout": "亡命"},
+        {"slot": "s02_sh1", "scene": 2, "chapter": 1, "shot": 1, "dur": 6.5,
+         "people": [], "era": "东汉末", "fallback": "still"},
+        {"slot": "s03_sh1", "scene": 3, "chapter": 2, "shot": 1, "dur": 6.5,
+         "people": [], "era": "东汉末", "fallback": "generate"},
+    ]}
+    e = edl.build_edl(story, needs, index, cfg, None)
+    check_true("整期 EDL：每场都有镜头",
+               all(p["shots"] for p in e["scenes"]), f"{len(e['scenes'])} 场")
+    check("整期 EDL：每场镜头总长 = 画面时长（旁白 + 尾垫）",
+          [round(sum(s["dur"] for s in p["shots"]), 2) for p in e["scenes"]],
+          [round(12.0 + float(cfg.video.tail_padding), 2)] * 3)
+    kinds = {p["scene"]: {s["kind"] for s in p["shots"]} for p in e["scenes"]}
+    check("绑了素材的场次用切片", kinds[1], {"clip", "reuse"})
+    check("没绑素材的场次走回退（不碰别的素材）", kinds[2], {"still"})
+    check("回退类型跟着需求清单", kinds[3], {"generate"})
+    check("校验通过", edl.validate_edl(e, cfg, index), [])
+    check_true("回退画面（静态图/生成图）不受切片单段 10 秒红线约束",
+               all(any(float(s["dur"]) > float(cfg.clips.max_seconds)
+                       for s in p["shots"] if s["kind"] in ("still", "generate"))
+                   for p in e["scenes"] if p["scene"] in (2, 3)),
+               "第 2/3 场各有一个 12.55s 的静态镜头，不该被报成红线")
+    check_true("切片占比算得出来", 0 < edl.clip_share(e) < 1,
+               f"{edl.clip_share(e):.1%}")
+
+    # ---- 校验器要能拦住每一类问题（这些是出片前的闸门）
+    bad = {"version": 1, "scenes": [{"scene": 1, "dur": 20.0, "shots": [
+        {"slot": "s01_sh1", "kind": "clip", "clip_id": "c1", "src_in": 0.0,
+         "dur": 12.0, "treatment": "plain"}]}]}
+    p1 = edl.validate_edl(bad, cfg, index)
+    check_true("拦下单镜头超上限", any("超过上限" in x for x in p1), f"{p1}")
+    bad["scenes"][0]["shots"][0].update({"dur": 6.0, "treatment": "zoom"})
+    p2 = edl.validate_edl(bad, cfg, index)
+    check_true("拦下不认识的手法", any("不认识" in x for x in p2), f"{p2}")
+    bad["scenes"][0]["shots"][0].update({"treatment": "plain", "clip_id": "不存在"})
+    p3 = edl.validate_edl(bad, cfg, index)
+    check_true("拦下不存在的素材 id", any("不在库里" in x for x in p3), f"{p3}")
+    bad["scenes"][0]["shots"][0].update({"clip_id": "c1", "src_in": 7.0})
+    p4 = edl.validate_edl(bad, cfg, index)
+    check_true("拦下「取用区间超出素材长度」", any("只有" in x for x in p4), f"{p4}")
+    bad3 = {"version": 1, "scenes": [{"scene": 1, "dur": 18.0, "shots": [
+        {"slot": "s01_sh1", "kind": "clip", "clip_id": "c1", "src_in": 0.0,
+         "dur": 6.0, "treatment": "plain"}]}]}
+    p5 = edl.validate_edl(bad3, cfg, index)
+    check_true("拦下镜头总长对不上画面时长（铺不满）",
+               any("≠ 画面时长" in x for x in p5), f"{p5}")
+    bad2 = {"version": 1, "scenes": [{"scene": 1, "dur": 20.0, "shots": [
+        {"slot": "s01_sh1", "kind": "clip", "clip_id": "c1", "src_in": 0.0,
+         "dur": 9.5, "treatment": "plain"},
+        {"slot": "s01_sh2", "kind": "still", "dur": 10.5, "treatment": "still_pan"}]}]}
+    p6 = edl.validate_edl(bad2, cfg, index)
+    check_true("拦下切片占比超合规红线", any("切片占比" in x for x in p6), f"{p6}")
+    check_true("describe 能出摘要", "场" in edl.describe(e), edl.describe(e))
+
+    # ---- 存盘 / 读回
+    with tempfile.TemporaryDirectory() as td:
+        cfg2 = load_config()
+        cfg2.paths["data_dir"] = td
+        p = edl.save(e, cfg2)
+        check_true("EDL 存盘", p.exists() and p.suffix == ".json", f"→ {p.name}")
+        back = edl.load(p)
+        check("读回一致", len(back["scenes"]), len(e["scenes"]))
+
+
+def test_frames() -> None:
+    """抽帧后的「定格放大」与画面上的标注位置（按像素验收，不靠眼睛）。"""
+    print("\n[定格放大 / 标注元素 frames + media.draw_callout]")
+    import tempfile
+
+    from PIL import Image as _Image, ImageDraw as _Draw
+
+    from hsg import frames, media
+
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        # ---- 造一张有规律条纹的图：竖条纹宽 20px
+        src = td / "src.png"
+        im = _Image.new("RGB", (320, 180), (20, 20, 20))
+        d = _Draw.Draw(im)
+        for i in range(16):
+            if i % 2 == 0:
+                d.rectangle([i * 20, 0, i * 20 + 19, 179], fill=(240, 240, 240))
+        im.save(src)
+
+        def stripe_width(img_path: Path) -> float:
+            """中横排上「亮条」的平均宽度（像素）—— 放大倍数直接反映在这里。
+
+            不用「数边缘」：JPEG 在硬边附近会振铃，边缘计数会被虚边带偏
+            （实测 zoom=2 时数出 21 条边缘，比原图的 15 还多，方向都反了）。
+            """
+            with _Image.open(img_path) as x:
+                g = x.convert("L")
+                w = g.width
+                px = g.crop((0, 90, w, 91)).load()
+            widths, run = [], 0
+            for i in range(w):
+                if px[i, 0] > 128:
+                    run += 1
+                elif run:
+                    widths.append(run)
+                    run = 0
+            if run:
+                widths.append(run)
+            return round(sum(widths) / len(widths), 1) if widths else 0.0
+
+        w0 = stripe_width(src)
+        check("原图亮条宽 20px（测试素材本身要对）", w0, 20.0)
+        w2 = stripe_width(frames.zoom_frame(src, td / "z2.png", zoom=2.0))
+        check_true("放大 2 倍 → 亮条约 40px（真的放大了）", 32 < w2 < 48, f"→ {w2}px")
+        w9 = stripe_width(frames.zoom_frame(src, td / "z9.png", zoom=99.0))
+        check_true("放大倍数被夹在 3.0（99 → 约 60px）", w9 > 50, f"→ {w9}px")
+        check("放大 1.0 倍等于原样（不裁不缩）",
+              stripe_width(frames.zoom_frame(src, td / "z1.png", zoom=1.0)), w0)
+        far = frames.zoom_frame(src, td / "zf.png", zoom=1.0, focus=(0.98, 0.5))
+        check_true("focus 可以指定放大位置（画面右侧）", far.exists())
+
+        # ---- 标注元素：位置必须落在各自的带里，谁也不许侵入谁
+        size = (int(cfg.video.orientations.landscape.width),
+                int(cfg.video.orientations.landscape.height))
+        fg_plain = td / "fg_plain.png"
+        _, fg_plain = media.build_layers(td / "bg1.jpg", fg_plain, size, cfg, image_path=None,
+                                         kicker="历史小故事 · 第1章 示例", title="示例章节")
+        check("没给大字时中部带是空的（不许凭空多出字）",
+              frames.ink_band(fg_plain, 0.40, 0.52), 0)
+        fg_mark = td / "fg_mark.png"
+        _, fg_mark = media.build_layers(td / "bg2.jpg", fg_mark, size, cfg, image_path=None,
+                                        kicker="历史小故事 · 第1章 示例", title="示例章节",
+                                        callout="亡命东归", nametag="曹操")
+        check_true("大字落在中部带（0.40-0.52）",
+                   frames.ink_band(fg_mark, 0.40, 0.52) > 500,
+                   f"→ {frames.ink_band(fg_mark, 0.40, 0.52)} 像素")
+        check_true("人名条落在左下带（0.57-0.67）",
+                   frames.ink_band(fg_mark, 0.57, 0.67) > 200,
+                   f"→ {frames.ink_band(fg_mark, 0.57, 0.67)} 像素")
+        check("大字没侵入字幕/图注区（0.72 以下）",
+              frames.ink_band(fg_mark, 0.74, 1.0) - frames.ink_band(fg_plain, 0.74, 1.0), 0)
+        check_true("人名条没侵入字幕区",
+                   frames.ink_band(fg_mark, 0.72, 1.0) == frames.ink_band(fg_plain, 0.72, 1.0),
+                   "人名条与无语版本在字幕区应完全一致")
+        check_true("章节标题还在顶部带（没被挤走）",
+                   frames.ink_band(fg_mark, 0.085, 0.255) > 500,
+                   f"→ {frames.ink_band(fg_mark, 0.085, 0.255)} 像素")
+
+        # ---- 超长标注词：字号自适应，不溢出画布
+        fg_long = td / "fg_long.png"
+        _, fg_long = media.build_layers(td / "bg3.jpg", fg_long, size, cfg, image_path=None,
+                                        callout="一二三四五六七八")
+        with _Image.open(fg_long) as x:
+            alpha = x.convert("RGBA").getchannel("A")
+            bbox = alpha.getbbox()
+        check_true("超长大字不溢出画布", bbox and bbox[2] <= size[0] and bbox[0] >= 0,
+                   f"bbox={bbox}")
+
+        # ---- 抽帧：素材不存在时必须报错，不能静默产出 0 字节
+        try:
+            frames.grab_frame(td / "不存在.mp4", 0.0, td / "f.jpg")
+            check("抽帧失败要抛错", False, "居然没抛错")
+        except Exception as exc:  # noqa: BLE001
+            check_true("抽帧失败要抛错（不是静默出 0 字节）",
+                       "0 字节" in str(exc) or "ffmpeg" in str(exc).lower(),
+                       f"→ {type(exc).__name__}: {str(exc)[:60]}")
+
+
+def test_silence_and_audio_track() -> None:
+    """静音轨的容器/编码器要跟扩展名走（否则 AAC 塞 mp3 直接失败）。"""
+    print("\n[静音轨 video.make_silence]")
+    import tempfile
+
+    from hsg import video as v
+
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        for name in ("a.mp3", "b.m4a"):
+            p = v.make_silence(td / name, 1.5, cfg)
+            info = v.probe_streams(p)
+            a = info.get("audio") or {}
+            check_true(f"{name} 生成成功且时长对", abs(float(info.get("duration") or 0) - 1.5) < 0.2,
+                       f"{info.get('duration')}s codec={a.get('codec')}")
+        check("扩展名决定编码器：.mp3 → mp3 / .m4a → aac",
+              ((v.probe_streams(td / "a.mp3").get("audio") or {}).get("codec"),
+               (v.probe_streams(td / "b.m4a").get("audio") or {}).get("codec")),
+              ("mp3", "aac"))
+
+
 def test_playlist_bgm() -> None:
     """按章节交替 BGM：区间换算、降级路径、有声区间判定。
 
@@ -1195,6 +1452,9 @@ def main() -> int:
     test_clip_index()
     test_clip_normalize()
     test_needs()
+    test_edl()
+    test_frames()
+    test_silence_and_audio_track()
     test_playlist_bgm()
     test_scene_kinds()
     test_scene_query_translation()

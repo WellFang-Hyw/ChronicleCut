@@ -12,6 +12,7 @@ data/slides/
 data/tmp/
 data/output/
 data/needs/
+data/edl/
 # 曲子本身不入库（3.6MB 音频），但来源与许可留痕要入库
 # （data/bgm/来源与许可.md 记了曲名/作者/许可类型/混音参数，发布举证用）
 data/bgm/**/*.mp3

@@ -380,6 +380,16 @@ def cmd_smoke(cfg, args) -> int:
     return subprocess.call([sys.executable, str(root / "scripts" / "smoke_video.py")])
 
 
+def cmd_smoke_clips(cfg, args) -> int:
+    """零 API 冒烟：影视切片 + EDL 剪辑链路（合成素材 → 排镜头 → 按镜头渲染）。"""
+    import subprocess as _sp
+    root = Path(__file__).resolve().parents[2]
+    cmd = [sys.executable, str(root / "scripts" / "smoke_clips.py")]
+    if getattr(args, "orientation", "both") not in (None, "both"):
+        cmd += ["-o", str(args.orientation)]
+    return _sp.call(cmd)
+
+
 def cmd_test(cfg, args) -> int:
     """零成本回归测试：口播清洗 / 校验过滤 / 折行 / 字幕切分。不调任何 API。"""
     import subprocess
@@ -393,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hsg", description="历史小故事：AI 写稿 + TTS 配音 + 配图字幕 → 成片")
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "plan", "probe-tts", "probe-images", "voices",
-                            "smoke", "test", "history"],
+                            "smoke", "smoke-clips", "test", "history", "agent"],
                    help="默认 run")
     p.add_argument("--config", help="指定配置文件（默认项目根 config.yaml）")
 
@@ -431,8 +441,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="probe-images：实测图源下载速度（判据是下得动，不是搜得到）")
     g2.add_argument("--backfill", action="store_true",
                     help="history：把 data/output 下已有 metadata 补录进生成记录")
+    g3 = p.add_argument_group("agent（生产线编排）")
+    g3.add_argument("--stage", choices=["status", "1", "2"], default="status",
+                    help="agent：status 看卡在哪（默认）/ 1 出脚本+素材需求清单 / 2 AI 剪辑+出片")
+    g3.add_argument("--metadata", help="agent --stage 2：指定某一期的 metadata.json（默认取最新）")
     g2.add_argument("--log-level", default=None, help="DEBUG / INFO / WARNING")
     return p
+
+
+def cmd_agent(cfg, args) -> int:
+    """生产线编排：阶段闸门 + AI 剪辑决策 + 自检（见 hsg/agent.py）。"""
+    from .agent import main_agent
+    return main_agent(cfg, args)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -444,7 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "run": cmd_run, "plan": cmd_plan, "probe-tts": cmd_probe_tts,
         "probe-images": cmd_probe_images, "voices": cmd_voices,
-        "smoke": cmd_smoke, "test": cmd_test, "history": cmd_history,
+        "smoke": cmd_smoke, "smoke-clips": cmd_smoke_clips,
+        "test": cmd_test, "history": cmd_history,
+        "agent": cmd_agent,
     }
     return handlers[args.command](cfg, args)
 

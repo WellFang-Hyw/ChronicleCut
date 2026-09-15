@@ -114,6 +114,81 @@ def _vertical_scrim(size: tuple[int, int], y0: float, y1: float,
     return layer
 
 
+# ---------------------------------------------------------------- 剪辑标注元素
+# 版面分区（改这里要同步改 test_verify 的像素断言）：
+#   0.045-0.075 栏目小字　0.085-0.255 章节标题　0.41-0.51 大字标注
+#   0.59-0.65 人名条　0.72 附近 图注　底部 字幕
+CALLOUT_CY = 0.46          # 大字标注的垂直中心
+NAMETAG_CY = 0.62          # 人名条的垂直中心
+
+
+def _rounded_bar(size: tuple[int, int], *, fill=(0, 0, 0), alpha=150,
+                 accent: tuple[int, int, int] | None = None,
+                 accent_w: int = 8) -> Image.Image:
+    """半透明底条 + 可选左侧色条（标注元素的底）。"""
+    w, h = size
+    bar = Image.new("RGBA", (w, h), fill + (alpha,))
+    if accent:
+        d = ImageDraw.Draw(bar)
+        d.rectangle([0, 0, max(1, accent_w), h], fill=accent + (235,))
+    return bar
+
+
+def draw_callout(fg: Image.Image, cfg: Config, text: str) -> Image.Image:
+    """在画面上打一个大字标注（解说视频里那一下「咚」的重音）。
+
+    为什么字号这么大：2-4 个字要能在手机小屏上一眼读完，所以占比比章节标题还大；
+    而且必须带底条 —— 素材画面的亮度不可控，没底条时白字会消失在亮背景里。
+    """
+    text = (text or "").strip()
+    if not text:
+        return fg
+    tw, th = fg.size
+    size = int(min(tw * 0.13, th * 0.085))
+    font = _font(size, bold=True)
+    while font.getlength(text) > tw * 0.80 and size > 20:
+        size = int(size * 0.9)
+        font = _font(size, bold=True)
+    a, d = font.getmetrics()
+    block_h = a + d
+    top = int(th * CALLOUT_CY) - block_h // 2
+    pad_y = int(block_h * 0.28)
+    pad_x = int(tw * 0.06)
+    bar_w = int(font.getlength(text)) + 2 * pad_x
+    bar = _rounded_bar((bar_w, block_h + 2 * pad_y), alpha=132,
+                       accent=(212, 175, 55), accent_w=max(4, int(block_h * 0.10)))
+    fg.alpha_composite(bar, (max(0, (tw - bar_w) // 2), max(0, top - pad_y)))
+    draw = ImageDraw.Draw(fg)
+    _draw_block(draw, [text], font, tw // 2, top, fill=(255, 245, 214),
+                outline=(0, 0, 0), outline_w=max(4, size // 12), line_gap=0)
+    return fg
+
+
+def draw_nametag(fg: Image.Image, cfg: Config, text: str) -> Image.Image:
+    """左下角的人物名条（观众不认识这张脸时才给）。"""
+    text = (text or "").strip()
+    if not text:
+        return fg
+    tw, th = fg.size
+    size = int(min(tw * 0.032, th * 0.022))
+    font = _font(size, bold=True)
+    a, d = font.getmetrics()
+    block_h = a + d
+    top = int(th * NAMETAG_CY) - block_h // 2
+    pad_x = int(size * 0.9)
+    pad_y = int(block_h * 0.24)
+    bar_w = int(font.getlength(text)) + 2 * pad_x
+    accent_w = max(4, int(size * 0.34))
+    x = int(tw * 0.07)
+    bar = _rounded_bar((bar_w, block_h + 2 * pad_y), alpha=150,
+                       accent=(212, 175, 55), accent_w=accent_w)
+    fg.alpha_composite(bar, (x, max(0, top - pad_y)))
+    draw = ImageDraw.Draw(fg)
+    draw.text((x + accent_w + pad_x, top), text, font=font, fill=(255, 248, 230),
+              stroke_width=2, stroke_fill=(0, 0, 0))
+    return fg
+
+
 def build_layers(
     bg_out: Path,
     fg_out: Path,
@@ -125,6 +200,8 @@ def build_layers(
     title: str = "",
     caption: str = "",
     credit: str = "",
+    callout: str = "",
+    nametag: str = "",
     darken: float = 0.34,
 ) -> tuple[Path, Path]:
     """合成一个分镜的背景层与前景层。"""
@@ -211,6 +288,14 @@ def build_layers(
         w = f.getlength(txt)
         draw.text((tw - margin_x - w, th - int(th * 0.135)), txt, font=f,
                   fill=(190, 196, 206), stroke_width=2, stroke_fill=(0, 0, 0))
+
+    # ---- 剪辑标注元素（影视切片路线的 T4：大字 + 人名条）
+    # 放在 build_layers 里是**故意的**：版面代码只有一份，
+    # 切片镜头和静态图镜头就不会各自演化、慢慢跑偏。
+    if callout:
+        fg = draw_callout(fg, cfg, callout)
+    if nametag:
+        fg = draw_nametag(fg, cfg, nametag)
 
     fg_out.parent.mkdir(parents=True, exist_ok=True)
     fg.save(fg_out, "PNG", optimize=True)

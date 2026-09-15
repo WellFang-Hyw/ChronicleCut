@@ -65,6 +65,10 @@ historical_story_gen/
 │   ├── images.py          配图：版权安全图库优先（Cleveland CC0 等）+ 年代匹配 + 去重
 │   ├── clips.py           影视切片素材库：索引 / 多维检索 / 规范化导入 / 合规配额
 │   ├── needs.py           素材需求清单：分镜 → 槽位（「要剪什么片段」的工作单）
+│   ├── edl.py             剪辑表（EDL）：AI 导演排镜头 + 合规校验 + 素材出处
+│   ├── frames.py          抽帧 / 定格放大 / 标注位置按像素验收
+│   ├── shotvideo.py       镜头编码 + 多镜头拼接 + 贴回语音（护栏 12 的落地点）
+│   ├── agent.py           阶段闸门编排：stage 1 停下等素材 / stage 2 自动出片
 │   ├── subtitles.py       ASS 字幕（按分镜时长铺时间轴）
 │   ├── media.py           Pillow 合成画面（背景层 + 前景层，两块分开出图）
 │   ├── video.py           ffmpeg：编码片段 / 拼接 / 混 BGM / 读回参数
@@ -72,10 +76,11 @@ historical_story_gen/
 │   └── cli.py             命令行
 ├── scripts/
 │   ├── smoke_video.py     零 LLM 的媒体链路冒烟测试 ← 媒体出问题先跑它
-│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导/切片/需求清单，287 项）
+│   ├── test_verify.py     零成本回归测试（清洗/校验/复检/版权策略/查重/分镜编号/语速传导/切片/需求清单/剪辑表/标注，332 项）
 │   ├── probe_clean_images.py  零成本配图专项探测（clean 策略下的命中率/版权/年代）
 │   ├── rerender.py        从已有 metadata 重渲染（复用文稿和语音，只换配图/画面）
 │   ├── check_layout.py    量一帧里标题带和字幕带是否重叠（不靠肉眼）
+│   ├── smoke_clips.py     零 API 冒烟：切片 + EDL 剪辑链路（合成假素材钉死全链路）
 │   ├── make_needs.py      出素材需求清单（脚本 → 槽位工作单；脚本先行那一环）
 │   ├── import_clip.py     导入影视切片（规范化 + 去音轨 + 登记 + 绑槽位）
 │   ├── calib_rate.py      从已生成期反算真实字/秒（校准 chars_per_second，别用 probe-tts）

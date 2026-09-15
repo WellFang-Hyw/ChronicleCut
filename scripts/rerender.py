@@ -32,58 +32,8 @@ from hsg.models import Chapter, Scene, Story  # noqa: E402
 from hsg.pipeline import render_orientation    # noqa: E402
 
 
-def load_story(meta_path: Path, cfg, audio_dir: Path, log) -> tuple[Story, dict]:
-    """返回 (Story, metadata 原始字典)。第二个返回值给调用方看当初的 tts 设定。"""
-    data = json.loads(meta_path.read_text(encoding="utf-8"))
-    sub = cfg.tts[str(cfg.tts.provider)]
-    voice = str(sub.get("voice_id") or "")
-    speed = sub.get("speed")
-    chapters: list[Chapter] = []
-    for c in data.get("chapters") or []:
-        scenes: list[Scene] = []
-        for k, s in enumerate(c.get("scenes") or []):
-            text = str(s.get("text") or "")
-            # 音频缓存 key = 文本 + 音色 + 语速，所以重渲染必须用**同样的语速**
-            tag = tts_mod.audio_tag(text, voice, speed)
-            idx = int(s.get("index") or (k + 1))
-            audio = audio_dir / f"scene_{idx:03d}_{tag}.mp3"
-            scenes.append(Scene(
-                index=idx, text=text,
-                image_query=str(s.get("image_query") or ""),
-                caption=str(s.get("caption") or ""),
-                chapter_index=int(c.get("index") or 1),
-                is_chapter_start=(k == 0),
-                audio_path=audio if audio.exists() else None,
-                duration=tts_mod.probe_duration(audio) if audio.exists() else 0.0,
-            ))
-        chapters.append(Chapter(index=int(c.get("index") or 1),
-                                heading=str(c.get("heading") or ""),
-                                summary=str(c.get("summary") or ""),
-                                seconds=int(c.get("seconds_target") or 60),
-                                facts=list(c.get("facts") or []),
-                                image_queries=list(c.get("image_queries") or []),
-                                scenes=scenes))
-    story = Story(
-        topic=str(data.get("topic") or ""),
-        title=str(data.get("title") or ""),
-        angle_question=str(data.get("angle_question") or ""),
-        hook=str(data.get("hook") or ""),
-        period=str(data.get("period") or ""),
-        period_start=int(data.get("period_start") or 0),
-        period_end=int(data.get("period_end") or 0),
-        chapters=chapters,
-    )
-    missing = [s.index for s in story.all_scenes if s.audio_path is None]
-    if missing:
-        log.warning("有 %d 个分镜找不到语音缓存（%s…）", len(missing), missing[:5])
-        log.warning("  音频缓存 key = 文本 + **音色** + **语速**，所以重渲染必须跟当初一致：")
-        log.warning("  当前按 音色=%s 语速=%s 找；找不到就用 --voice / --speed 指定当初的值。",
-                    voice, speed)
-        log.warning("  查某期当初用的音色：看 metadata 里的 tts 字段，"
-                    "或看生成记录 data\\生成记录.md 的「模型」行。")
-    log.info("从 metadata 载入：《%s》%d 章 / %d 个分镜 / 语音 %.2f 分钟（音色 %s 语速 %s）",
-             story.title, len(chapters), len(story.all_scenes), story.duration / 60, voice, speed)
-    return story, data
+# load_story 已提到库里（src/hsg/storyio.py）—— 三个调用方共用，别在 scripts 之间互相 import
+from hsg.storyio import load_story          # noqa: E402
 
 
 def main() -> int:

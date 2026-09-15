@@ -41,6 +41,22 @@ def clip_dir(cfg: Config) -> Path:
     return p if p.is_absolute() else (cfg.paths.get_path("data_dir").parent / p)
 
 
+def clip_file(cfg: Config, clip_id: str) -> Path | None:
+    """按素材 id 取规范化产物的绝对路径（渲染时用）。找不到返回 None。
+
+    路径只有一个来源：索引里的 `file` 字段（相对 index 所在目录）。
+    别在渲染层再拼一遍路径 —— 那是「同一件事两个实现」，早晚跑偏。
+    """
+    idx = load_index(index_path(cfg))
+    for c in idx.get("clips") or []:
+        if str(c.get("id")) == str(clip_id):
+            rel = str(c.get("file") or "").strip()
+            if not rel:
+                return None
+            return (index_path(cfg).parent / rel).resolve()
+    return None
+
+
 def index_path(cfg: Config) -> Path:
     """索引文件位置（读 config.clips.index）。
 
