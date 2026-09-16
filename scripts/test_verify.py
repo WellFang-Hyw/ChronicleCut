@@ -1885,9 +1885,11 @@ def test_sources() -> None:
     fake = _FakeLLM({"shots": [{
         "index": 1, "keywords": ["托孤", "周公负成王图"],
         "candidates": [
-            {"title": "汉武大帝", "year": "2005", "locate": "第58集 12:30 左右",
-             "why": "汉武帝晚年有托孤戏", "confidence": "high"},
+            {"title": "汉武大帝", "year": "2005", "locate": "汉武帝晚年 12:30 左右",
+             "episodes_total": 58, "ep_range": "56-58", "in_episode": "集尾",
+             "basis": "托孤是全剧收尾剧情", "why": "汉武帝晚年有托孤戏", "confidence": "high"},
             {"title": "乌龙闯情关", "year": "2002", "locate": "霍光擅权阶段",
+             "episodes_total": 40, "ep_range": "第38~45集", "in_episode": "第 12 分 30 秒",
              "why": "讲刘询从民间登基", "confidence": "mid"},
         ]}]})
 
@@ -1917,10 +1919,19 @@ def test_sources() -> None:
     check("只给必须剪的槽位出取景单（其余不浪费 token）", len(src["items"]), 1)
     it = src["items"][0]
     check("槽位对得上", it["slot"], "s01_sh1")
-    check("模型塞的集数被剪掉", S.FABRICATED.search(it["candidates"][0]["locate"] or ""), None)
-    check_true("剪掉后用占位句说明「已隐去」（不是留空让人以为没定位）",
-               "已隐去" in it["candidates"][0]["locate"], f"→ {it['candidates'][0]['locate']}")
-    check("没编集数的候选原样保留", it["candidates"][1]["locate"], "霍光擅权阶段")
+    c0, c1 = it["candidates"][0], it["candidates"][1]
+    check_true("时间码（分钟级）被剪掉 —— 那个精度是编的",
+               "12:30" not in (c0["locate"] or ""), f"→ {c0['locate']}")
+    check("推算集数区间被解析出来", c0["ep_range"], [56, 58])
+    check("全剧进度由代码算（不让模型算）", c0["ep_progress"], "97%–100%")
+    check("集内位置保留分段词", c0["in_episode"], "集尾")
+    check_true("区间超出总集数 → 收窄到总集数并标出矛盾",
+               c1["ep_range"] == [38, 40] and "超出总集数" in c1["ep_note"],
+               f"→ {c1['ep_range']} {c1['ep_note']}")
+    check_true("集内位置写成「第 12 分 30 秒」这种 → 丢掉（只认分段词）",
+               c1["in_episode"] == "", f"→ {c1['in_episode']!r}")
+    check_true("检索式里带上「剧名 第N集」（整集上传可直接搜到）",
+               "汉武大帝 第56集" in it["queries"], f"→ {it['queries']}")
     check_true("预填的 import 命令绑上同场所有槽位（一条素材填满一场）",
                "s01_sh1,s01_sh2" in it["import_cmd"], f"→ {it['import_cmd']}")
 
@@ -1960,6 +1971,46 @@ def test_sources() -> None:
     check_true("模型挂了 → 检索式照出（照搜不误）", bool(src_dead["items"][0]["queries"]),
                f"→ {src_dead['items'][0]['queries']}")
     check("llm_used 标明没问出来", src_dead["llm_used"], False)
+
+    # ---- ②c 集数区间解析与校验（纯函数，全是确定性活）
+    check("「第56~58集」→ (56,58)", S.parse_ep_range("第56~58集"), (56, 58))
+    check("「56-58」→ (56,58)", S.parse_ep_range("56-58"), (56, 58))
+    check("单个数字「57」→ (57,57)", S.parse_ep_range("57"), (57, 57))
+    check("倒着写也认（58-56）", S.parse_ep_range("58-56"), (56, 58))
+    check("瞎写 → None", S.parse_ep_range("不知道"), None)
+    check("空 → None", S.parse_ep_range(""), None)
+    check("进度算得对（56-58 / 58 集）", S.ep_progress(56, 58, 58), "97%–100%")
+    check("没给总集数 → 不给百分比（不瞎算）", S.ep_progress(56, 58, 0), "")
+    check_true("上界超出 → 收到总集数 + 备注（30-45 / 40 集 → 30-40）",
+               S.check_ep_range(30, 45, 40)[0] == (30, 40)
+               and "已收到 40" in S.check_ep_range(30, 45, 40)[1],
+               f"→ {S.check_ep_range(30, 45, 40)}")
+    check_true("整个区间都在总集数之外 → 不硬收窄，保留原值但明确告警"
+               "（模型可能连总集数都记错了，收窄反而给它背书）",
+               S.check_ep_range(90, 95, 40)[0] == (90, 95)
+               and "超出总集数" in S.check_ep_range(90, 95, 40)[1],
+               f"→ {S.check_ep_range(90, 95, 40)}")
+    check("正常区间 → 不改动", S.check_ep_range(56, 58, 58)[0], (56, 58))
+
+    # ---- ②d 区间过宽要标出来（不然「第 5–40 集」等于没给）
+    class _Wide:
+        def chat_json(self, *_a, **_k):
+            return {"shots": [{"index": 1, "keywords": ["朝会"], "candidates": [
+                {"title": "汉武大帝", "cast": "陈宝国", "episodes_total": 58,
+                 "ep_range": "5-40", "in_episode": "中段", "locate": "朝会"}]}]}
+
+    md_wide = S.to_markdown(S.build_sources(need_obj, cfg, _Wide()))
+    check_true("区间宽到 ≥15 集 → 标「参考价值低」并给替代做法",
+               "参考价值低" in md_wide and "空镜" in md_wide,
+               f"→ {[l for l in md_wide.splitlines() if '参考价值低' in l]}")
+    class _Narrow:
+        def chat_json(self, *_a, **_k):
+            return {"shots": [{"index": 1, "keywords": ["托孤"], "candidates": [
+                {"title": "汉武大帝", "cast": "陈宝国", "episodes_total": 58,
+                 "ep_range": "56-58", "in_episode": "集尾", "locate": "托孤"}]}]}
+
+    check_true("窄区间不标「参考价值低」（别把有用的也劝退）",
+               "参考价值低" not in S.to_markdown(S.build_sources(need_obj, cfg, _Narrow())))
 
     # ---- ③b 剧名锚点：给不出主演的要标明「可能编的」，no_footage 要显眼
     class _Anchors:

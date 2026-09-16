@@ -31,14 +31,75 @@ SOURCES_VERSION = 1
 # 模型爱编的两类东西：集数（第58集 / 58集）与时间码（12:30）
 FABRICATED = re.compile(r"第?\s*\d+\s*集|\d{1,2}:\d{2}")
 
-# 剪掉编造的集数/时间码之后用这句占位（留空会让人以为「压根没有定位信息」）
-STAGE_ONLY = "（模型给的集数/时间码不可靠，已隐去；请按剧情阶段自己在正片里找）"
+# 时间码（12:30 / 1:02:30）：这个精度模型给不准，纯编 —— 一律剪掉
+FABRICATED_TIME = re.compile(r"\b\d{1,2}:\d{2}(:\d{2})?\b")
+
+# 兼容旧名（历史提交里叫 FABRICATED，测的是「集数或时间码」；现在集数改走结构化校验）
+FABRICATED = re.compile(r"第?\s*\d+\s*集|\d{1,2}:\d{2}")
+
+# 集内位置只用分段词（分钟级是编的）
+IN_EPISODE_WORDS = ("前段", "中段", "后段", "集尾", "开头", "结尾", "开场")
+
+_EP_RANGE = re.compile(r"(\d{1,3})\s*[-—~至到]\s*(\d{1,3})|(\d{1,3})\s*集")
+
+
+def parse_ep_range(text) -> tuple[int, int] | None:
+    """把 「56-58」「第56~58集」「56集」解析成 (56, 58)。解析不出来返回 None。
+
+    为什么不直接让模型算进度：算数是确定性的活，而且它算得不准。
+    模型只负责给「区间 + 总集数」，百分比一律代码算（见 ep_progress）。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return None
+    if t.isdigit():                      # 模型直接把区间写成单个数字（"57"）
+        n = int(t)
+        return (n, n) if n >= 1 else None
+    m = _EP_RANGE.search(t)
+    if not m:
+        return None
+    if m.group(1) and m.group(2):
+        lo, hi = int(m.group(1)), int(m.group(2))
+    else:
+        lo = hi = int(m.group(3))
+    if lo > hi:
+        lo, hi = hi, lo
+    return (lo, hi) if lo >= 1 else None
+
+
+def ep_progress(lo: int, hi: int, total: int) -> str:
+    """全剧进度区间（%）。代码算，不让模型算。"""
+    if total <= 0:
+        return ""
+    a = max(1, min(total, lo)) / total * 100
+    b = max(1, min(total, hi)) / total * 100
+    return f"{a:.0f}%–{b:.0f}%"
+
+
+def check_ep_range(lo: int, hi: int, total: int) -> tuple[tuple[int, int], str]:
+    """区间与总集数交叉校验 → (收窄后的区间, 备注)。
+
+    踩过的场景：模型说「第 56-58 集」而它自己也说总集数 40 —— 两个数互相矛盾，
+    直接印出来会让人去翻不存在的第 58 集。矛盾就按总集数收窄并标出来。
+    """
+    if total <= 0:
+        return (lo, hi), ""
+    if lo > total:
+        return (lo, hi), f"⚠ 区间超出总集数（{total} 集），按总集数看应在最后一集附近"
+    if hi > total:
+        return (lo, max(lo, total)), f"⚠ 区间上界超出总集数（{total} 集），已收到 {total}"
+    return (lo, hi), ""
 
 _SYSTEM = """你是影视资料编辑，帮纪录片/解说视频的剪辑师找「这场戏可能在哪些剧里」。
 
 硬要求（违反即报废）：
-1. **绝对不要给出集数和时间码**。你不知道就说不知道 —— 编一个「第 58 集 12:30」会让剪辑师
-   白翻半小时。允许、也只允许用**剧情阶段**定位，例如「汉武帝晚年至临终的段落（大结局前后）」。
+1. **集数给「推算区间」，不给时间码**。
+   · 要给：`episodes_total`（该剧总集数，不知道就留空）、`ep_range`（这场戏**可能**在第几集
+     到第几集，如 "56-58"）、`in_episode`（集内位置，只能用分段词：前段/中段/集尾）、
+     `basis`（推算依据：为什么落在这个位置，例如「托孤是全剧收尾剧情」）。
+   · 不要给：**具体到分钟的进度位置**（"12:30" 这种）—— 那个精度你给不准，纯属编造，
+     剪辑师按它去找会浪费更多时间。给区间反而是有用的参考。
+   · 拿不准就把区间放宽（"50-58" 也有用），但**区间必须落在总集数范围内**。
 2. 候选 3 个，按推荐度排序，**先想「这场戏最经典的影视呈现是哪一版」**（往往就是那一两部），
    再考虑其它覆盖同时期的剧。优先大陆历史正剧与纪录片，其次港台/合拍剧；不要综艺和短视频二创。
 3. `why` 必须落到**具体剧情**（「汉武帝临终前把周公负成王图交给霍光，是《汉武大帝》的收尾段落」），
@@ -86,6 +147,10 @@ def queries_for(slot: dict, candidates: list[dict] | None = None,
         name = str(c.get("title") or "").strip()
         if name and kws:
             out.append(f"{name} {kws[0]}")
+        # 有推算集数就给「剧名 第N集」：整集上传在 B 站/YouTube 很常见，
+        # 直接搜到那一集、从推算位置往前找，比关键词搜切片更稳
+        if name and c.get("ep_range"):
+            out.append(f"{name} 第{c['ep_range'][0]}集")
     if people and kws:
         out.append(f"{' '.join(people[:2])} {kws[0]}")
     for k in kws[:2]:
@@ -139,7 +204,9 @@ def _ask_llm(slots: list[dict], topic: str, era: str, llm) -> dict[str, dict]:
             f'"no_footage": false, "keywords": ["检索关键词", "…"], '
             f'"candidates": [{{"title": "剧名", "year": "年份（拿不准就空）", '
             f'"cast": "主演（必须给，给不出就别写这条）或播出平台", '
-            f'"locate": "剧情阶段定位（不要集数）", "why": "为什么可能有这场戏", '
+            f'"episodes_total": 58, "ep_range": "56-58", "in_episode": "集尾/中段/前段", '
+            f'"locate": "剧情阶段定位", "basis": "推算依据（为什么落在这个位置）", '
+            f'"why": "为什么可能有这场戏", '
             f'"confidence": "high/mid/low"}}]}}]}}')
     except Exception as exc:  # noqa: BLE001
         log.warning("取景单的候选片源没问出来（只出检索式，不影响剪素材）：%s", exc)
@@ -159,17 +226,35 @@ def _ask_llm(slots: list[dict], topic: str, era: str, llm) -> dict[str, dict]:
             title = str(c.get("title") or "").strip()
             if not title:
                 continue
-            locate = str(c.get("locate") or "").strip()
-            # 兜底：提示词里禁了集数/时间码，但模型还是可能塞（实测它很爱写「第58集」）。
-            # 这类信息它不可靠 —— 剪掉，只保留剧情阶段描述。
-            if FABRICATED.search(locate):
-                locate = STAGE_ONLY
+            locate = FABRICATED_TIME.sub("", str(c.get("locate") or "")).strip()
+            basis = FABRICATED_TIME.sub("", str(c.get("basis") or "")).strip()
+            why = FABRICATED_TIME.sub("", str(c.get("why") or "")).strip()
+            try:
+                total = int(c.get("episodes_total") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            ep = parse_ep_range(c.get("ep_range"))
+            note = ""
+            if ep:
+                ep, note = check_ep_range(ep[0], ep[1], total)
+            in_ep = str(c.get("in_episode") or "").strip()[:12]
+            if in_ep and not any(w in in_ep for w in IN_EPISODE_WORDS):
+                # 集内位置只认分段词 —— 模型写「12 分 30 秒」这种就丢掉
+                in_ep = ""
             cands.append({
                 "title": title[:40],
                 "cast": str(c.get("cast") or "").strip()[:40],
                 "year": str(c.get("year") or "").strip()[:8],
-                "locate": locate[:60],
-                "why": str(c.get("why") or "").strip()[:80],
+                "episodes_total": total,
+                "ep_range": list(ep) if ep else [],
+                "ep_note": note,
+                "ep_progress": ep_progress(ep[0], ep[1], total) if ep else "",
+                # 区间宽到 15 集以上就不是「参考」了 —— 直说它没用，别让人真去翻
+                "ep_wide": bool(ep and (ep[1] - ep[0]) >= 15),
+                "in_episode": in_ep,
+                "locate": locate[:70],
+                "basis": basis[:90],
+                "why": why[:80],
                 "confidence": str(c.get("confidence") or "").strip().lower()[:6] or "low",
             })
         kws = [str(k).strip()[:16] for k in (item.get("keywords") or [])
@@ -281,8 +366,10 @@ def to_markdown(src: dict) -> str:
     out += [
         "> **候选片源是模型给的，未核实** —— 模型**连剧名都会编**（实测编出过不存在的剧、"
         "还标成高置信度），所以：**以你能不能搜到为准，不要以本表为准**。",
-        "> 别按候选硬找：**先拿下面的检索式去 B 站/YouTube 搜**，那一场戏通常就在结果里，",
-        "> 比先查集数再拖进度条快得多。搜不到再换下一个候选。",
+        "> **集数是推算的区间，不是查证结果** —— 找不到就往前后各推 1–2 集。",
+        "> 集内位置只给分段（前段/中段/集尾），**不给分钟数**：分钟级模型给不准、纯编造。",
+        "> 用法：**先拿检索式去 B 站/YouTube 搜**（含「剧名 第N集」，整集上传很常见），",
+        "> 搜到了从推算位置往前/后翻；搜不到就换下一个候选。",
         "",
     ]
     for i, it in enumerate(items, 1):
@@ -303,6 +390,8 @@ def to_markdown(src: dict) -> str:
                     bits.append(f"({c['year']})")
                 bits.append(f"主演/平台：{c['cast']}" if c.get("cast")
                             else "**⚠ 模型给不出主演 → 很可能是编的，最后再试**")
+                if c.get("episodes_total"):
+                    bits.append(f"共 {c['episodes_total']} 集")
                 if c.get("confidence"):
                     bits.append(f"[{c['confidence']}]")
                 if c.get("verdict") == "unsure":
@@ -312,6 +401,21 @@ def to_markdown(src: dict) -> str:
                 if c.get("why"):
                     bits.append(f"理由：{c['why']}")
                 out.append(f"    - {'　'.join(bits)}")
+                if c.get("ep_range"):
+                    pos = f"推算 **第 {c['ep_range'][0]}–{c['ep_range'][1]} 集**"
+                    if c.get("ep_progress"):
+                        pos += f"（全剧进度 {c['ep_progress']}）"
+                    if c.get("in_episode"):
+                        pos += f"｜集内：{c['in_episode']}"
+                    out.append(f"        - {pos}")
+                    if c.get("ep_wide"):
+                        out.append("        - ⚠ **区间过宽（≥15 集），参考价值低** —— 这多半是"
+                                   "「哪部剧都有」的通用镜头（朝堂/宫门/街市空镜）。"
+                                   "别照区间翻：直接在素材库里找任意同年代的宫廷空镜即可。")
+                    if c.get("ep_note"):
+                        out.append(f"        - {c['ep_note']}")
+                if c.get("basis"):
+                    out.append(f"        - 推算依据：{c['basis']}")
         else:
             out.append("- 候选片源：模型没给（不影响剪辑 —— 直接用下面的检索式搜）")
         out.append("- 检索式（复制去搜）：")
