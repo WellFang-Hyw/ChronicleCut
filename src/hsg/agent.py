@@ -330,6 +330,15 @@ def _selfcheck(cfg: Config, story, edl: dict, outs: list[Path]) -> list[str]:
     return problems
 
 
+def _tc(sec) -> str:
+    """秒 → mm:ss（举证清单里给人看的时间码）。"""
+    try:
+        v = int(round(float(sec or 0)))
+    except (TypeError, ValueError):
+        return "?"
+    return f"{v // 60:d}:{v % 60:02d}"
+
+
 def _source_report(cfg: Config, story, edl: dict, index: dict) -> Path:
     """素材出处清单（发布举证用）。每条用到的素材都要能说出片名/年份/来源。"""
     used: dict[str, dict] = {}
@@ -352,14 +361,24 @@ def _source_report(cfg: Config, story, edl: dict, index: dict) -> Path:
               f"- **切片占比：{share:.1%}**（合规上限 "
               f"{float(cfg.clips.get('max_share', 0.45)):.0%}）",
               f"- 单段上限：{float(cfg.clips.get('max_seconds', 10)):.0f} 秒（全部已去音轨）", "",
-              "| 素材 id | 片名 | 年份 | 人物 | 时长占比 | 用在分镜 | 描述 |",
-              "|---|---|---|---|---|---|---|"]
+              "| 素材 id | 片名 | 年份 | 人物 | 时长占比 | 用在分镜 | 取源片段 | 裁切 | 描述 |",
+              "|---|---|---|---|---|---|---|---|---|"]
     for cid, rec in sorted(used.items()):
         c = by_id.get(cid, {})
+        # 取源片段的时间码是「合理引用」能说清范围的关键（举证时最容易被问的就是这个）
+        tcs = [_tc(c.get("src_in_sec")), _tc(c.get("src_out_sec"))]
+        src_tc = f"{tcs[0]}–{tcs[1]}" if any(c.get(k) is not None
+                                             for k in ("src_in_sec", "src_out_sec")) else "全段"
+        crops = []
+        if float(c.get("crop_top") or 0) > 0:
+            crops.append(f"裁上 {float(c['crop_top']):.0%}")
+        if float(c.get("crop_bottom") or 0) > 0:
+            crops.append(f"裁下 {float(c['crop_bottom']):.0%}")
         lines.append(f"| `{cid}` | {c.get('title') or '?'} | {c.get('year') or '?'} | "
                      f"{'、'.join(c.get('people') or []) or '—'} | "
                      f"{rec['dur']:.1f}s | "
                      f"{'、'.join(str(x) for x in sorted(rec['scenes']))} | "
+                     f"{src_tc} | {'/'.join(crops) or '—'} | "
                      f"{c.get('desc') or ''} |")
     lines += ["", "> 未在此表中的画面为 AI 生成图或公共领域图库图（见 data/images/_sources.json）。", ""]
     out_dir = cfg.paths.get_path("output_dir")

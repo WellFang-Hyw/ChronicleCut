@@ -2154,6 +2154,73 @@ def test_sources() -> None:
         check("json 里 items 完整", len(json.loads(p.read_text(encoding="utf-8"))["items"]), 1)
 
 
+def test_crop_subtitle_band() -> None:
+    """硬字幕/台标只能裁：按像素验收「裁完之后底部那条带没了」。"""
+    print("\n[clips.normalize_clip 裁切去字幕带]")
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path as _P
+
+    from PIL import Image
+
+    from hsg import clips as C
+    from hsg.config import load_config
+
+    cfg = load_config()
+    spec = cfg.clips.get("spec") or {}
+    FF = shutil.which("ffmpeg")      # 跟 video.run_ffmpeg 同一个来源（PATH）
+    if not FF:
+        check("环境里没有 ffmpeg", False, "跳过")
+        return
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = _P(td)
+        # 造假素材：上 80% 绿 + 下 20% 品红（模拟烧死在画面里的对白字幕带）
+        src = (tdp / "with_subs.mp4").resolve()
+        subprocess.run([FF, "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "color=c=green:s=1920x864",
+                        "-f", "lavfi", "-i", "color=c=magenta:s=1920x216",
+                        "-filter_complex", "[0:v][1:v]vstack", "-t", "3",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                        str(src)], check=True)
+
+        def bottom_px(mp4) -> tuple:
+            png = tdp / "f.png"
+            subprocess.run([FF, "-hide_banner", "-loglevel", "error", "-y", "-ss", "1",
+                            "-i", str(mp4), "-frames:v", "1", str(png)], check=True)
+            im = Image.open(png).convert("RGB")
+            return im.getpixel((im.width // 2, im.height - 6))
+
+        check("源片底部是品红（字幕带）", bottom_px(src), (254, 0, 253))
+
+        keep = C.normalize_clip(src, (tdp / "keep.mp4").resolve(), spec, 10.0)
+        check("不裁 → 字幕带还在（对照组）", bottom_px(tdp / "keep.mp4"), (254, 0, 253))
+
+        got = C.normalize_clip(src, (tdp / "cut.mp4").resolve(), spec, 10.0, crop_bottom=0.20)
+        px = bottom_px(tdp / "cut.mp4")
+        check_true("裁下 20% → 底部那条字幕带没了（变成上面的绿色）",
+                   px[1] > 100 and px[0] < 100 and px[2] < 100, f"→ {px}")
+        check("裁完仍是目标画幅（不出黑边/不变形）",
+              (got["width"], got["height"]), (int(spec["width"]), int(spec["height"])))
+        check("裁完时长不变", round(float(got["duration"]), 1), 3.0)
+        check_true("记录里存了裁切比例（举证要说清裁过什么）",
+                   got["crop_bottom"] == 0.2 and got["crop_top"] == 0.0, f"→ {got}")
+        check_true("记录里存了取源片段的时间码",
+                   got["src_in"] == 0.0 and got["src_out"] == 3.0, f"→ {got}")
+
+        got2 = C.normalize_clip(src, (tdp / "cut2.mp4").resolve(), spec, 10.0,
+                                src_in=1.0, src_out=2.5, crop_top=0.05, crop_bottom=0.20)
+        check("按时间码取一段 + 上下都裁",
+              (got2["src_in"], got2["src_out"], round(float(got2["duration"]), 1)), (1.0, 2.5, 1.5))
+        try:
+            C.normalize_clip(src, (tdp / "bad.mp4").resolve(), spec, 10.0,
+                             crop_top=0.4, crop_bottom=0.4)
+            check("上下裁太多要拦下", False, True)
+        except Exception as exc:  # noqa: BLE001
+            check_true("上下裁太多（0.8）→ 拦下不乱出片", "太多" in str(exc), f"→ {exc}")
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2182,6 +2249,7 @@ def main() -> int:
     test_cover()
     test_clip_index()
     test_clip_normalize()
+    test_crop_subtitle_band()
     test_needs()
     test_edl()
     test_frames()

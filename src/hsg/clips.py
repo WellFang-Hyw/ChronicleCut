@@ -152,10 +152,17 @@ def probe(path: Path) -> dict:
 
 def normalize_clip(src: Path, dest: Path, spec: dict, max_seconds: float,
                    src_in: float = 0.0, src_out: float = 0.0,
-                   *, preset: str = "") -> dict:
+                   *, preset: str = "", crop_top: float = 0.0,
+                   crop_bottom: float = 0.0) -> dict:
     """把人工剪好的片子规范化：统一规格 + **去音轨** + 限制时长。
 
     `-an` 是这一步的关键：不用原声（版权），而且我们有自己的配音。
+
+    `crop_top` / `crop_bottom`：**按比例裁掉上/下一条带**（0.14 = 裁掉底部 14%）。
+    为什么需要：影视剧画面里的对白字幕和台标水印是**烧死在画面里的**，ffmpeg 去不掉，
+    只能连画面一起裁掉。裁剪发生在缩放之前，之后照旧按 `increase + crop` 铺满目标画幅
+    （所以裁完不会出现黑边，代价是左右各损失一点、并轻微放大）。
+    高度用 `trunc(.../2)*2` 取偶数：yuv420p 不接受奇数高宽。
 
     `preset` 留空 = x264 默认（medium），跟以前完全一样；给值就传 `-preset`。
     为什么留这个口子：1080p 用 medium 编码很吃内存（实测在只剩 1.4GB 可用的机器上
@@ -176,10 +183,18 @@ def normalize_clip(src: Path, dest: Path, spec: dict, max_seconds: float,
         raise video.FFmpegError(f"规范化后只剩 {dur:.2f}s（起点 {start:.2f}s / 总长 {total:.2f}s）")
     w, h, fps = int(spec.get("width", 1920)), int(spec.get("height", 1080)), int(spec.get("fps", 30))
     dest.parent.mkdir(parents=True, exist_ok=True)
+    ct, cb = max(0.0, float(crop_top)), max(0.0, float(crop_bottom))
+    if ct + cb >= 0.6:
+        raise video.FFmpegError(f"上下裁切加起来 {ct + cb:.2f} 太多了（上限 0.6），画幅会变形")
+    vf_parts = []
+    if ct or cb:
+        vf_parts.append(
+            f"crop=iw:trunc(ih*{1.0 - ct - cb:.4f}/2)*2:0:trunc(ih*{ct:.4f}/2)*2")
+    vf_parts += [f"scale={w}:{h}:force_original_aspect_ratio=increase",
+                 f"crop={w}:{h}", "setsar=1", f"fps={fps}"]
     video.run_ffmpeg(
         ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src), "-an",
-         "-vf", (f"scale={w}:{h}:force_original_aspect_ratio=increase,"
-                 f"crop={w}:{h},setsar=1,fps={fps}"),
+         "-vf", ",".join(vf_parts),
          *(["-preset", str(preset)] if preset else []),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
          "-movflags", "+faststart", str(dest)],
@@ -189,7 +204,9 @@ def normalize_clip(src: Path, dest: Path, spec: dict, max_seconds: float,
         # 理论上 -an 之后不可能有音轨；真有就是 ffmpeg 参数被改坏了，必须拦下
         raise video.FFmpegError(f"规范化后仍带音轨，拒绝入库：{dest.name}")
     return {"duration": got.get("duration", dur), "path": dest,
-            "width": got.get("width"), "height": got.get("height"), "fps": got.get("fps")}
+            "width": got.get("width"), "height": got.get("height"), "fps": got.get("fps"),
+            "src_in": round(start, 2), "src_out": round(start + dur, 2),
+            "crop_top": round(ct, 4), "crop_bottom": round(cb, 4)}
 
 
 def share_of(total_video: float, used: list[dict]) -> float:

@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（489 项，不调 API）
+run.bat test                              :: 零成本回归测试（498 项，不调 API）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
@@ -337,6 +337,15 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
 35. **取景单是多轮累积的**（`merge_candidates`）：模型每轮给的候选都不一样，
    覆盖式刷新等于抽奖。`--stage sources` 会把上一轮的候选并进来（按剧名去重、
    留置信度更高的、补齐字段），跑几次越攒越全。自检怀疑的排最后。
+
+36. **源片自带的字幕/台标只能裁，不能去**（`clips.normalize_clip` 的 `crop_top`/`crop_bottom`）：
+   它们烧死在画面里，ffmpeg 去不掉。裁剪发生在缩放**之前**，之后照旧按
+   `increase + crop` 铺满画幅（所以不出黑边，代价是左右各损失一点 + 轻微放大）；
+   高度用 `trunc(.../2)*2` 取偶数（yuv420p 不吃奇数）；上下加起来 ≥0.6 直接拦下。
+   **裁了多少必须入档**（`crop_top`/`crop_bottom` 进素材库记录 → 出现在「素材出处清单」的
+   「裁切」列）—— 发布举证时要能说清"已裁去底部 14%（源片硬字幕）"。
+37. **取源片段的时间码必须入档**（`--in/--out` → `src_in_sec`/`src_out_sec` → 举证清单的
+   「取源片段」列）。「合理引用」最说不清的就是"用了哪一段"，这一列就是答案。
 
 ## 6. 已知的机制性局限（不要试图「优化」掉）
 

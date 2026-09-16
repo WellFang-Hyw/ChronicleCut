@@ -74,12 +74,17 @@ def do_import(a, cfg) -> int:
     max_sec = float(cfg.clips.get("max_seconds", 10.0))
     dest = idx_path.parent / "norm" / f"{a.id}.mp4"
     print(f"导入 {src.name} → {dest.relative_to(ROOT)}")
+    ct, cb = float(getattr(a, "crop_top", 0.0) or 0.0), float(getattr(a, "crop_bottom", 0.0) or 0.0)
+    tc = (f"　取源片 {a.in_ or 0:.0f}s–{a.out or '末'}s" if (a.in_ or a.out) else "　取源片全段")
     print(f"  目标规格 {spec.get('width')}x{spec.get('height')}@{spec.get('fps')}"
-          f"　单段上限 {max_sec:.0f}s　去音轨 ✓")
+          f"　单段上限 {max_sec:.0f}s　去音轨 ✓{tc}"
+          + (f"　裁上 {ct:.0%}/裁下 {cb:.0%}" if (ct or cb) else ""))
     try:
         got = clips.normalize_clip(src, dest, spec, max_sec,
                                   src_in=to_seconds(a.in_), src_out=to_seconds(a.out),
-                                  preset=str(getattr(a, "preset", "") or ""))
+                                  preset=str(getattr(a, "preset", "") or ""),
+                                  crop_top=float(getattr(a, "crop_top", 0.0) or 0.0),
+                                  crop_bottom=float(getattr(a, "crop_bottom", 0.0) or 0.0))
     except Exception as exc:  # noqa: BLE001
         print(f"✗ 规范化失败：{exc}")
         return 4
@@ -95,7 +100,15 @@ def do_import(a, cfg) -> int:
         "slots": split_tags(a.slots),
         "desc": a.desc or "", "note": a.note or "",
         "src_file": str(src),
-        "rights": a.rights or f"{a.title or '?'}（{a.year or '?'}）· 合理引用，单段≤{max_sec:.0f}s，已去原声",
+        # 举证用：用了源片的哪一段（这是「合理引用」能说清范围的关键）
+        "src_in_sec": got.get("src_in"), "src_out_sec": got.get("src_out"),
+        "crop_top": got.get("crop_top"), "crop_bottom": got.get("crop_bottom"),
+        "rights": a.rights or (
+            f"{a.title or '?'}（{a.year or '?'}）· 合理引用，单段≤{max_sec:.0f}s，已去原声"
+            + (f"，取源片 {_tc(got.get('src_in'))}–{_tc(got.get('src_out'))}"
+               if a.in_ or a.out else "")
+            + (f"，已裁去底部 {cb:.0%}（源片硬字幕）" if cb else "")
+            + (f"，已裁去顶部 {ct:.0%}（源片台标/水印）" if ct else "")),
     }
     if clips.add_clip(idx, rec) is None:
         print("✗ 登记失败（id 或 file 缺失）")
@@ -107,6 +120,15 @@ def do_import(a, cfg) -> int:
     print(f"  索引：{idx_path.relative_to(ROOT)}　（现有 {len(idx['clips'])} 条）")
     print("\n下一步：把这一条填进素材需求清单对应的槽位，或直接靠标签检索使用。")
     return 0
+
+
+def _tc(sec) -> str:
+    """秒 → mm:ss（举证清单里给人看的时间码）。"""
+    try:
+        s = int(round(float(sec or 0)))
+    except (TypeError, ValueError):
+        return "?"
+    return f"{s // 60:d}:{s % 60:02d}"
 
 
 def do_list(cfg) -> int:
