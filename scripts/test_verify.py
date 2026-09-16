@@ -1773,6 +1773,76 @@ def test_series() -> None:
                f"→ {[t.ep for t in back2.episodes(S)]}")
 
 
+def test_agent_plan_pick() -> None:
+    """阶段 2 用哪份脚本：默认只认 plan 产物（别静默渲染错的一期）+ 多份在场的提醒。"""
+    print("\n[agent.pick_plan / plan_candidates / pending_note]")
+    import json
+    import os
+    import tempfile
+    import time
+    from pathlib import Path as _P
+
+    from hsg import agent
+    from hsg.config import load_config
+
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        cfg["paths"]["output_dir"] = td
+        out = _P(td)
+
+        def _write(name: str, topic: str, *, age: float = 0.0, series: str = "", ep: int = 0):
+            f = out / name
+            f.write_text(json.dumps({"topic": topic, "title": topic + "（标题）",
+                                     "series": series, "series_ep": ep},
+                                    ensure_ascii=False), encoding="utf-8")
+            if age:
+                old_t = time.time() - age
+                os.utime(f, (old_t, old_t))
+            return f
+
+        # ① 只有非 plan 的 metadata（老路/整期跑完的产物）→ 兜底认它
+        other = _write("20260101_某期_metadata.json", "整期跑完的旧产物")
+        check("没有 plan 产物时兜底认最新的 metadata", agent.pick_plan(cfg).name, other.name)
+
+        # ② plan 更旧、非 plan 更新（这正是会渲染错一期的场景）→ 必须仍然挑 plan
+        plan = _write("20260102_plan_metadata.json", "待出片的这期", age=30)
+        check_true("plan 更旧、别的 metadata 更新 → 仍然挑 plan（不挑更新的那份）",
+                   agent.pick_plan(cfg).name == plan.name,
+                   f"→ {agent.pick_plan(cfg).name}")
+        check("显式 --metadata 优先于一切", agent.pick_plan(cfg, other).name, other.name)
+
+        # ③ 候选按时间新→旧
+        _write("20260103_plan_metadata.json", "更新的那期")
+        check_true("plan_candidates 按时间新→旧",
+                   [p.name for p in agent.plan_candidates(cfg)]
+                   == ["20260103_plan_metadata.json", "20260102_plan_metadata.json"],
+                   f"→ {[p.name for p in agent.plan_candidates(cfg)]}")
+
+        # ④ 题材摘要：日志里只报文件名，人看不出是哪一期
+        ser = _write("20260104_plan_metadata.json", "霍光：一个臣子凭什么能换掉皇帝？",
+                     series="古代十大权臣", ep=1)
+        check("metadata 摘要带系列与集号（不然看不出是哪一集）",
+              agent.meta_brief(ser), "《古代十大权臣》第1集 霍光：一个臣子凭什么能换掉皇帝？")
+        check("读不出来的 metadata → 空摘要（不让流程挂掉）",
+              agent.meta_brief(out / "不存在的.json"), "")
+
+        # ⑤ 多份在场的提醒
+        note = agent.pending_note(cfg, ser)
+        check_true("多份脚本在场 → 提醒里摊开清单", "--metadata" in note and "共" not in note[:2],
+                   f"→ {note.splitlines()[0] if note else '（空）'}")
+        check_true("提醒里点出默认用哪份", agent.pick_plan(cfg).name in note,
+                   f"→ {note.splitlines()[0] if note else '（空）'}")
+        # 只有一份 plan 时不该刷提示（没人愿意每跑一次都看一段清单）
+        with tempfile.TemporaryDirectory() as td2:
+            cfg2 = load_config()
+            cfg2["paths"]["output_dir"] = td2
+            only = _P(td2) / "only_plan_metadata.json"
+            only.write_text(json.dumps({"topic": "只有这一期"}, ensure_ascii=False),
+                            encoding="utf-8")
+            check_true("只有一份脚本时不刷提示", agent.pending_note(cfg2, only) == "",
+                       f"→ {agent.pending_note(cfg2, only)!r}")
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -1787,6 +1857,7 @@ def main() -> int:
     test_angle_mode()
     test_topic_levels()
     test_series()
+    test_agent_plan_pick()
     test_fact_audit()
     test_license_policy()
     test_culture_filter()

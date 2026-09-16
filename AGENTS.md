@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（415 项，不调 API）
+run.bat test                              :: 零成本回归测试（424 项，不调 API）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
@@ -258,6 +258,12 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
    **静默截掉**（不报错、不告警）。加了系列名之后，测试里的「封面 kicker 一行放得下」两项必须过。
 27. **写系列集要在提示词里说明「这是第 N 集」**（`outline.build_outline` 的 series 分支）：
    不让模型把系列里其他集的内容拿来充篇幅，前情一句带过。
+28. **`--stage 2` 的输入只认「plan 产物」**（`agent.pick_plan`：显式 `--metadata` > 最新
+   `*plan*_metadata.json` > 兜底最新 metadata）。**不要**退回 `find_latest_metadata` 当默认 ——
+   它 glob 的是所有 `*_metadata.json`，中间跑过别的期就会**静默渲染错的那一期**
+   （片子看着正常、内容是另一集）。`data/output` 下有多份脚本时，`status` 和 `stage 2`
+   都必须把清单摊开，并给出 `--metadata "<文件>"` 的钉住写法；
+   日志里报脚本名时必须带 `meta_brief()`（系列/集号/题材）—— 只报文件名，人看不出是哪一期。
 
 ## 6. 已知的机制性局限（不要试图「优化」掉）
 

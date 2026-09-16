@@ -52,6 +52,58 @@ def find_plan_metadata(cfg: Config) -> Path | None:
     return cands[0] if cands else None
 
 
+def plan_candidates(cfg: Config) -> list[Path]:
+    """所有「待出片」的脚本产物（新→旧）。多份同时在的时候，人必须知道有几份。"""
+    out = cfg.paths.get_path("output_dir")
+    return sorted(out.glob("*plan*_metadata.json"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def meta_brief(path) -> str:
+    """从 metadata 里读出一句话题材 —— 日志里只报文件名，人看不出是哪一期。"""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:            # noqa: BLE001 —— 读不出来不该让流程挂掉
+        return ""
+    topic = str(d.get("topic") or d.get("title") or "")
+    ser, ep = str(d.get("series") or ""), int(d.get("series_ep") or 0)
+    return f"《{ser}》第{ep}集 {topic}" if ser else topic
+
+
+def pending_note(cfg: Config, chosen: Path | None) -> str:
+    """data/output 下有多份脚本副本时的提醒。
+
+    为什么必须有：`--stage 2` 默认挑**最新**的那份，中间只要跑过别的期
+    （或者用过 rerender），就会**静默渲染错的那一期** —— 出来的片看着正常、
+    内容却不是你这次做的那集。多份在场时把清单摊开、把「怎么指定」写出来。
+    """
+    cands = plan_candidates(cfg)
+    if len(cands) <= 1:
+        return ""
+    lines = [f"⚠ data/output 下有 {len(cands)} 份脚本，默认用最新那份："
+             f"{chosen.name if chosen else '-'}",
+             "  要指定就加 --metadata："]
+    for p in cands[:8]:
+        mark = "← 默认" if chosen is not None and p == chosen else ""
+        lines.append(f"    --metadata \"{p}\"　{meta_brief(p)} {mark}")
+    return "\n".join(lines)
+
+
+def pick_plan(cfg: Config, explicit: str | Path | None = None) -> Path | None:
+    """`--stage 2` 该用哪份脚本。
+
+    优先级：显式 `--metadata` > **最新的 plan 产物** > 兜底「最新的 metadata」。
+
+    为什么默认只认 plan 产物：阶段 2 的输入永远是阶段 1 出给你的那份稿。
+    踩过的坑 —— 原来默认 `find_latest_metadata`，它 glob 所有 `*_metadata.json`：
+    中间只要跑过别的期（或 rerender 写过新的 metadata），阶段 2 就**静默渲染错的那一期**，
+    出来的片子看着一切正常、内容却是另一集。
+    """
+    if explicit:
+        return Path(explicit)
+    return find_plan_metadata(cfg) or find_latest_metadata(cfg)
+
+
 def find_latest_metadata(cfg: Config) -> Path | None:
     out = cfg.paths.get_path("output_dir")
     cands = sorted(out.glob("*_metadata.json"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -103,7 +155,14 @@ def status(cfg: Config) -> int:
         print("▶ 阶段 0：还没有脚本。")
         print('  下一步：run.bat agent --stage 1 -t "你的题材"')
         return 0
-    print(f"✓ 脚本：{meta.name}")
+    cands = plan_candidates(cfg)
+    if len(cands) > 1:
+        print(f"脚本：{len(cands)} 份（--stage 2 默认用最新那份）")
+        for i, p in enumerate(cands[:8]):
+            mark = "← 最新，就是它" if p == meta else ""
+            print(f"  {'▶' if i == 0 else ' '} {p.name}　{meta_brief(p)} {mark}")
+    else:
+        print(f"✓ 脚本：{meta.name}　{meta_brief(meta)}")
 
     if needs_path is None:
         print("▶ 阶段 1 没走完：还没有素材需求清单。")
@@ -303,13 +362,19 @@ def stage2(cfg: Config, args) -> int:
     """阶段 2：补齐语音/配图 → AI 导演排镜头 → 合规校验 → 渲染 → 自检报告。"""
     ensure_dirs(cfg)
     keys = ApiKeys.from_env()
-    meta = Path(args.metadata) if getattr(args, "metadata", None) else find_latest_metadata(cfg)
+    meta = pick_plan(cfg, getattr(args, "metadata", None))
     if meta is None or not Path(meta).exists():
         log.error("找不到 metadata：先跑 --stage 1 出脚本")
         return 1
     log.info("═" * 70)
-    log.info("阶段 2：AI 剪辑 + 渲染（脚本 %s）", Path(meta).name)
+    log.info("阶段 2：AI 剪辑 + 渲染")
+    log.info("  脚本：%s", Path(meta).name)
+    log.info("  这一期：%s", meta_brief(meta) or "（metadata 里没记题材）")
     log.info("═" * 70)
+    note = pending_note(cfg, Path(meta))
+    if note:
+        for line in note.splitlines():
+            log.warning("%s", line)
 
     do_images = not bool(getattr(args, "no_images", False))
     do_video = not bool(getattr(args, "no_video", False))
