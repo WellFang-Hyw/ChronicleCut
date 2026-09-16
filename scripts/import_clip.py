@@ -75,7 +75,7 @@ def do_import(a, cfg) -> int:
     dest = idx_path.parent / "norm" / f"{a.id}.mp4"
     print(f"导入 {src.name} → {dest.relative_to(ROOT)}")
     ct, cb = float(getattr(a, "crop_top", 0.0) or 0.0), float(getattr(a, "crop_bottom", 0.0) or 0.0)
-    tc = (f"　取源片 {a.in_ or 0:.0f}s–{a.out or '末'}s" if (a.in_ or a.out) else "　取源片全段")
+    tc = (f"　取源片 {a.in_ or '0:00'}–{a.out or '末'}" if (a.in_ or a.out) else "　取源片全段")
     print(f"  目标规格 {spec.get('width')}x{spec.get('height')}@{spec.get('fps')}"
           f"　单段上限 {max_sec:.0f}s　去音轨 ✓{tc}"
           + (f"　裁上 {ct:.0%}/裁下 {cb:.0%}" if (ct or cb) else ""))
@@ -215,6 +215,11 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="体检素材库")
     ap.add_argument("--remove", metavar="ID", help="撤销一次导入（删记录 + 规范化产物）")
     ap.add_argument("--keep-file", action="store_true", help="配合 --remove：保留规范化产物")
+    ap.add_argument("--crop-bottom", dest="crop_bottom", type=float, default=0.0,
+                    help="裁掉底部一条带（比例，0.14 = 裁掉 14%%）。用于去掉烧死在画面里的"
+                         "对白字幕；裁完不出黑边（之后按 increase+crop 铺满画幅）")
+    ap.add_argument("--crop-top", dest="crop_top", type=float, default=0.0,
+                    help="裁掉顶部一条带（比例，0.06 = 6%%）。用于去掉台标/水印")
     ap.add_argument("--preset", default="",
                     help="x264 preset（留空=x264 默认 medium；批量导入可用 ultrafast 提速）")
     a = ap.parse_args()
