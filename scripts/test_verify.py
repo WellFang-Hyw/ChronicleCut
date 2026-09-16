@@ -1291,6 +1291,49 @@ def test_edl() -> None:
         check("读回一致", len(back["scenes"]), len(e["scenes"]))
 
 
+def test_edl_overlong_shot() -> None:
+    """导演让素材"出得比它本身还长"→ 该分镜退回规则排法（不是毙掉整集）。"""
+    print("\n[edl 素材长度校验：超长镜头退回规则排法]")
+    from hsg import edl as E
+    from hsg.config import load_config
+    from hsg.models import Chapter, Scene, Story
+
+    cfg = load_config()
+    cap = float(cfg.clips.get("max_seconds", 10.0))
+    idx = {"clips": [{"id": "hg1", "dur": 7.0, "slots": ["s1_sh1", "s1_sh2", "s1_sh3"],
+                      "title": "汉武大帝", "file": "norm/hg1.mp4", "width": 1920,
+                      "height": 1080, "fps": "30/1"}]}
+    sc = Scene(index=1, text="旁白", chapter_index=1, image_query="q")
+    sc.duration = 20.0
+    story = Story(topic="t", title="t", chapters=[Chapter(index=1, heading="一", scenes=[sc])])
+    needs = {"topic": "t", "slots": [
+        {"slot": f"s1_sh{i}", "scene": 1, "chapter": 1, "dur": 6.7, "priority": "must",
+         "scene_priority": "must", "need": "x", "callout": "", "people": []}
+        for i in (1, 2, 3)]}
+
+    class _Over:
+        def chat_json(self, *_a, **_k):
+            return {"scenes": [{"scene": 1, "shots": [
+                {"clip_id": "hg1", "src_in": 0, "dur": 9.0, "treatment": "plain",
+                 "callout": "", "nametag": ""}]}]}
+
+    edl = E.build_edl(story, needs, idx, cfg, _Over())
+    shots = edl["scenes"][0]["shots"]
+    # 只看真取素材的镜头（clip/reuse）；still 是回退静态图，不受素材长度约束
+    bad = [s for s in shots if s.get("kind") in ("clip", "reuse")
+           and float(s.get("src_in") or 0) + float(s["dur"]) > 7.0 + 0.05]
+    check_true("没有「取超过素材长度」的镜头（渲染必崩的那种）", not bad, f"→ {bad[:2]}")
+    check_true("整集仍然出得来（不是直接毙掉）", bool(shots), f"→ {len(shots)} 个镜头")
+    check_true("每条镜头都不超过素材长度",
+               all(float(s["dur"]) <= 7.0 + 0.05 for s in shots if s.get("kind") != "still"),
+               f"→ {[(s['dur'], s.get('kind')) for s in shots]}")
+    check_true("总长仍然铺满分镜时长",
+               abs(sum(float(s["dur"]) for s in shots) - (20.0 + 0.55)) < 0.3,
+               f"→ {sum(float(s['dur']) for s in shots)}")
+    chk = E.validate_edl(edl, cfg, idx)
+    check_true("校验通过（不再报「取不出这么长」）", not chk, f"→ {chk[:2]}")
+
+
 def test_frames() -> None:
     """抽帧后的「定格放大」与画面上的标注位置（按像素验收，不靠眼睛）。"""
     print("\n[定格放大 / 标注元素 frames + media.draw_callout]")
@@ -2291,6 +2334,7 @@ def main() -> int:
     test_pyflakes_gate()
     test_needs()
     test_edl()
+    test_edl_overlong_shot()
     test_frames()
     test_silence_and_audio_track()
     test_playlist_bgm()

@@ -260,6 +260,16 @@ def direct_edl(story: Story, needs: dict, index: dict, cfg: Config, llm) -> dict
                 break
             src_in = max(0.0, float(sh.get("src_in") or 0))
             dur = max(0.2, float(sh.get("dur") or 0))
+            # 素材长度校验：导演经常让 7 秒的素材出 9~10 秒（提示词里写了它也不听）。
+            # 这类镜头**渲染时必然出错**（ffmpeg 取不到那么长），所以在这里就退回规则排法 ——
+            # 踩过：只靠后面的 validate_edl 拦，会把**整集**毙掉（宁可不出片），
+            # 而其实只有这几个分镜需要退让。
+            clip_dur = float(by_id[cid].get("dur") or 0)
+            if clip_dur > 0 and src_in + dur > clip_dur + 0.05:
+                log.warning("导演让 %s 出 %.1fs（从 %.1fs 起），但这条素材只有 %.1fs（分镜 %s）"
+                            "→ 该分镜改用规则排镜头", cid, dur, src_in, clip_dur, idx)
+                shots = []
+                break
             treat = str(sh.get("treatment") or "plain")
             if treat not in TREATMENTS:
                 treat = "plain"
