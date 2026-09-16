@@ -36,3 +36,7 @@ dist/
 # 另一套 agent 工具（OpenCode 系）的状态目录，与项目内容无关
 # 注意：.gitignore 不支持行内注释，模式后面不能跟 # 说明，否则整行失效
 .omo/
+
+# 片源下载（B站/YouTube）：cookie 文件等于账号凭据，绝不提交
+*cookies*.txt
+data/downloads/

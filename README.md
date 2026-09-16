@@ -695,6 +695,27 @@ python scripts\check_layout.py frame.png
 > 要编 1080p；实测本机 14GB 被吃到 92% 时会挂）。**重跑一次即可**，别去改断言 ——
 > 判据是「隔离跑同一条也失败 + 代码路径当天没改」就是环境。要稳就先关掉几个 VS Code/浏览器。
 
+### 2026-09-16 · 片源下载（yt-dlp）实测结论：两个站都要 cookie
+- 起因：问「B站和 YouTube 能不能下载成 mp4」。能，工具是 yt-dlp，已装进项目 venv
+  （`2026.08.19`）。
+- **在这台机器上实测的结论**（不是查文档抄的）：
+  · B站不带 cookie → `HTTP Error 412: Precondition Failed`（风控）；补浏览器 UA + Referer 也没用；
+  · YouTube → `Sign in to confirm you're not a bot`（网络是通的，请求已打到 player API；
+    注意 curl 直接访问 youtube.com 会超时，但 yt-dlp 能到 —— 本机是 TUN/系统代理
+    `127.0.0.1:7993`，需要时给 yt-dlp 加 `--proxy http://127.0.0.1:7993`）；
+  · `--cookies-from-browser` 两条路都断：edge 报 `Failed to decrypt with DPAPI`
+    （新版 App-Bound Encryption，yt-dlp issue #10927），chrome 报
+    `Could not copy Chrome cookie database`（本机没有可读的 Chrome profile）。
+- 所以可行路线写进了 `docs/生产线操作手册.md` §3.5：
+  **A** 浏览器扩展导出 cookies.txt（`--cookies`）—— 推荐；
+  **B** B站官方客户端下载后 `ffmpeg -i video.m4s -i audio.m4s -c copy out.mp4`（拷流不重编码）；
+  **C** 录屏兜底（7 秒素材够用，注意别录进 UI/弹幕）。
+  另记了 `--download-sections "*32:15-32:22"` —— **只下需要的那几秒**，省盘省时间；
+  一集里要抠好几段时（《汉武大帝》末段要出 3 条）才整集下更划算。
+- cookie 文件等于账号凭据：`.gitignore` 加了 `*cookies*.txt` 和 `data/downloads/`，
+  绝不提交。
+- 选片源优先**正片**，别用解说二创（画面里带别人的字幕/logo/水印，既难看又说不清出处）。
+
 ### 2026-09-16 · 剪素材不用剪辑软件了（按时间码直接抠）+ 硬字幕裁切
 - 起因：问「推荐剪辑软件」。核实之后发现**这一步本来不需要剪辑软件** ——
   `scripts/import_clip.py` 早就有 `--in / --out`，可以直接指着一整集抠出 32:15–32:22
