@@ -501,7 +501,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hsg", description="历史小故事：AI 写稿 + TTS 配音 + 配图字幕 → 成片")
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "plan", "probe-tts", "probe-images", "voices",
-                            "smoke", "smoke-clips", "test", "history", "agent", "topics", "series"],
+                            "smoke", "smoke-clips", "test", "history", "agent", "topics", "series",
+                            "sources"],
                    help="默认 run")
     p.add_argument("series_name", nargs="?", default="",
                    help="series 命令的系列名（run.bat series \"古代十大权臣\"）")
@@ -552,8 +553,9 @@ def build_parser() -> argparse.ArgumentParser:
     g2.add_argument("--backfill", action="store_true",
                     help="history：把 data/output 下已有 metadata 补录进生成记录")
     g3 = p.add_argument_group("agent（生产线编排）")
-    g3.add_argument("--stage", choices=["status", "1", "2"], default="status",
-                    help="agent：status 看卡在哪（默认）/ 1 出脚本+素材需求清单 / 2 AI 剪辑+出片")
+    g3.add_argument("--stage", choices=["status", "sources", "1", "2"], default="status",
+                    help="agent：status 看卡在哪（默认）/ sources 只刷新取景单 / "
+                         "1 出脚本+素材需求清单 / 2 AI 剪辑+出片")
     g3.add_argument("--metadata", help="agent --stage 2：指定某一期的 metadata.json（默认取最新）")
     g2.add_argument("--log-level", default=None, help="DEBUG / INFO / WARNING")
     return p
@@ -639,6 +641,7 @@ def main(argv: list[str] | None = None) -> int:
         "smoke": cmd_smoke, "smoke-clips": cmd_smoke_clips,
         "test": cmd_test, "history": cmd_history,
         "agent": cmd_agent, "topics": cmd_topics, "series": cmd_series,
+        "sources": cmd_agent,
     }
     return handlers[args.command](cfg, args)
 

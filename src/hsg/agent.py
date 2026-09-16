@@ -33,7 +33,7 @@ from pathlib import Path
 from . import clips as clips_mod
 from . import edl as edl_mod
 from . import needs as needs_mod
-from . import pipeline, storyio, video
+from . import pipeline, sources as sources_mod, storyio, video
 from .config import ApiKeys, Config, ensure_dirs, provider_banner
 
 log = logging.getLogger("hsg.agent")
@@ -244,7 +244,11 @@ def stage1(cfg: Config, args) -> int:
         log.warning("没有 DeepSeek key → 需求清单只有规则兜底（缺人物与标注词建议）")
         need_obj = needs_mod.build_needs(story, cfg, None, recorded=recorded)
 
-    md, js = needs_mod.save(need_obj, cfg, index)
+    # 取景单：模型给候选片源（未核实）+ 代码给检索式，一起写进同一份 .md
+    src_obj = sources_mod.build_sources(need_obj, cfg, llm) if keys.deepseek else None
+    md, js = needs_mod.save(need_obj, cfg, index, sources=src_obj)
+    if src_obj:
+        sources_mod.save(src_obj, cfg)
     cov = needs_mod.coverage(need_obj, index)
     log.info("═" * 70)
     log.info("阶段 1 完成，现在**停下**等你剪素材。")
@@ -441,6 +445,48 @@ def stage2(cfg: Config, args) -> int:
     return 0
 
 
+def stage_sources(cfg: Config, args) -> int:
+    """只刷新取景单（阶段 1 的产物之一），不重跑写稿 —— 稿子不动，只重问片源候选。
+
+    什么时候用：想换一批片源候选、或者当初问的时候模型抽风了。
+    """
+    keys = ApiKeys.from_env()
+    meta = pick_plan(cfg, getattr(args, "metadata", None))
+    if meta is None:
+        log.error("找不到脚本：先跑 --stage 1")
+        return 1
+    story, raw = storyio.load_story(meta, cfg, cfg.paths.get_path("audio_dir"), log)
+    index = clips_mod.load_index(clips_mod.index_path(cfg))
+    recorded = storyio.recorded_durations(raw)
+
+    # 复用**已有的**需求清单，不重建 —— 重建会再跑一次 LLM 补全，把你自己看过的
+    # 描述/标注词悄悄换掉（踩过：刷新取景单把「遗诏托孤」冲成了「托孤」）。
+    # 只有找不到清单时才重建。
+    need_path = find_latest_needs(cfg)
+    if need_path is not None:
+        need_obj = _load_needs(need_path)
+        log.info("复用已有需求清单：%s", need_path.name)
+    else:
+        log.warning("没有现成的需求清单 → 重新生成一份（描述可能与上一次不同）")
+
+    llm = None
+    try:
+        if keys.deepseek:
+            from .llm import LLM
+            llm = LLM(cfg, keys)
+        if need_path is None:
+            need_obj = needs_mod.build_needs(story, cfg, llm, recorded=recorded)
+        src_obj = sources_mod.build_sources(need_obj, cfg, llm)
+    finally:
+        if llm is not None:
+            llm.close()
+    md, js = needs_mod.save(need_obj, cfg, index, sources=src_obj)
+    p = sources_mod.save(src_obj, cfg)
+    log.info("取景单已刷新：%s", p)
+    log.info("  需求清单（含取景单）：%s", md)
+    return 0
+
+
 def main_agent(cfg: Config, args) -> int:
     stage = str(getattr(args, "stage", "status") or "status")
     if stage == "status":
@@ -449,5 +495,7 @@ def main_agent(cfg: Config, args) -> int:
         return stage1(cfg, args)
     if stage == "2":
         return stage2(cfg, args)
-    log.error("不认识的阶段：%s（用 status / 1 / 2）", stage)
+    if stage == "sources":
+        return stage_sources(cfg, args)
+    log.error("不认识的阶段：%s（用 status / sources / 1 / 2）", stage)
     return 1

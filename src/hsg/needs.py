@@ -307,8 +307,13 @@ def coverage(needs: dict, index: dict) -> dict:
     }
 
 
-def to_markdown(needs: dict, cfg: Config, index: dict | None = None) -> str:
-    """产出给人看的工作单（你照着这份去剪素材）。"""
+def to_markdown(needs: dict, cfg: Config, index: dict | None = None,
+                sources: dict | None = None) -> str:
+    """产出给人看的工作单（你照着这份去剪素材）。
+
+    `sources`：取景单（候选片源 + 检索式），插在「槽位明细」前面 ——
+    剪辑师先看「去哪找」，再回头看「每场要几段」。
+    """
     rows = needs.get("slots") or []
     index = index or clips_mod.empty_index()
     cov = coverage(needs, index)
@@ -341,6 +346,12 @@ def to_markdown(needs: dict, cfg: Config, index: dict | None = None) -> str:
     out.append("")
     out.append("4. 剪完重新出一次清单，看覆盖度；缺的先不管 —— 渲染时会按「回退方案」自动降级。")
     out.append("")
+    if sources:
+        # 取景单：去哪儿找这些画面（候选片源未核实 + 可复制的检索式）
+        from . import sources as sources_mod
+        out.append(sources_mod.to_markdown(sources))
+        out.append("")
+
     out.append("## 槽位明细")
     out.append("")
 
@@ -384,8 +395,12 @@ def to_markdown(needs: dict, cfg: Config, index: dict | None = None) -> str:
     return "\n".join(out) + "\n"
 
 
-def save(needs: dict, cfg: Config, index: dict | None = None) -> tuple[Path, Path]:
-    """写两个文件：给人看的 .md（工作单）+ 给机器用的 .json（后面装配用）。"""
+def save(needs: dict, cfg: Config, index: dict | None = None,
+         sources: dict | None = None) -> tuple[Path, Path]:
+    """写两个文件：给人看的 .md（工作单）+ 给机器用的 .json（后面装配用）。
+
+    `sources` 给了就把取景单一起写进 .md（剪辑师只需读一个文件）。
+    """
     out_dir = cfg.paths.get_path("data_dir") / "needs"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d")
@@ -393,6 +408,6 @@ def save(needs: dict, cfg: Config, index: dict | None = None) -> tuple[Path, Pat
                    if c not in '\\/:*?"<>|').strip()[:28] or "未命名"
     md = out_dir / f"{stamp}_{safe}_素材需求.md"
     js = out_dir / f"{stamp}_{safe}_素材需求.json"
-    md.write_text(to_markdown(needs, cfg, index), encoding="utf-8")
+    md.write_text(to_markdown(needs, cfg, index, sources=sources), encoding="utf-8")
     js.write_text(json.dumps(needs, ensure_ascii=False, indent=1), encoding="utf-8")
     return md, js

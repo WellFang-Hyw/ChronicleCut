@@ -1843,6 +1843,175 @@ def test_agent_plan_pick() -> None:
                        f"→ {agent.pending_note(cfg2, only)!r}")
 
 
+def test_sources() -> None:
+    """取景单：候选片源（未核实）+ 检索式 + 防编造 + 降级路径 + 插进需求清单。"""
+    print("\n[sources 取景单]")
+    import json
+    import tempfile
+    from pathlib import Path as _P
+
+    from hsg import needs as N
+    from hsg import sources as S
+    from hsg.config import load_config
+    from hsg.models import Chapter, Scene, Story
+
+    # ---- ① 关键词兜底用章节标题，不是截断旁白（踩过：搜出来是废词）
+    slot = {"slot": "s01_sh1", "callout": "遗诏托孤", "heading": "遗诏辅政：权从哪来？",
+            "people": ["汉武帝", "霍光"], "era": "西汉昭帝、宣帝年间",
+            "need": "汉武帝病榻前将一幅周公负成王图交予霍光，近景，烛光昏暗。"}
+    check("兜底关键词 = 标注词 + 章节标题", S.fallback_keywords(slot), ["遗诏托孤", "遗诏辅政"])
+    qs = S.queries_for(slot, [{"title": "汉武大帝"}], [])
+    check_true("检索式里用剧名 + 关键词（能直接搜）", "汉武大帝 遗诏托孤" in qs, f"→ {qs}")
+    check_true("检索式里不出现整句旁白（截断旁白是废词）",
+               not any("病榻前" in x for x in qs), f"→ {qs}")
+    check_true("检索式去重且有上限", len(qs) == len(set(qs)) and len(qs) <= 5, f"→ {qs}")
+    check_true("模型给了关键词就用模型的",
+               "汉武大帝 托孤" in S.queries_for(slot, [{"title": "汉武大帝"}], ["托孤"]))
+    qs_none = S.queries_for(slot, [], [])
+    check_true("连候选片源都没有时，仍给出人物/标注检索式（不空手）", bool(qs_none), f"→ {qs_none}")
+
+    # ---- ② 防编造：模型塞集数/时间码必须被剪掉
+    check_true("识别「第58集」", bool(S.FABRICATED.search("第58集")), "第58集")
+    check_true("识别「12:30」", bool(S.FABRICATED.search("12:30")), "12:30")
+    check_true("不误伤剧情阶段描述", not S.FABRICATED.search("汉武帝晚年、大结局前后"))
+
+    class _FakeLLM:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def chat_json(self, *_a, **_k):
+            return self.payload
+
+    fake = _FakeLLM({"shots": [{
+        "index": 1, "keywords": ["托孤", "周公负成王图"],
+        "candidates": [
+            {"title": "汉武大帝", "year": "2005", "locate": "第58集 12:30 左右",
+             "why": "汉武帝晚年有托孤戏", "confidence": "high"},
+            {"title": "乌龙闯情关", "year": "2002", "locate": "霍光擅权阶段",
+             "why": "讲刘询从民间登基", "confidence": "mid"},
+        ]}]})
+
+    class _DeadLLM:
+        def chat_json(self, *_a, **_k):
+            raise RuntimeError("模型挂了")
+
+    need_obj = {
+        "version": 1, "topic": "霍光：一个臣子凭什么能换掉皇帝？", "title": "霍光废帝",
+        "era": "西汉", "generated_at": "2026-09-16 11:03", "slot_seconds": 8.5,
+        "duration_source": {"audio": 0, "metadata": 0, "estimated": 3},
+        "narration_seconds": 30.0,
+        "slots": [
+            {**slot, "scene": 1, "chapter": 1, "dur": 6.6, "priority": "must",
+             "scene_priority": "must", "narration": "…"},
+            {"slot": "s01_sh2", "scene": 1, "chapter": 1, "dur": 6.6, "priority": "reuse",
+             "scene_priority": "must", "people": ["汉武帝"], "era": "西汉",
+             "callout": "遗诏托孤", "heading": "遗诏辅政：权从哪来？", "need": "…"},
+            {"slot": "s02_sh1", "scene": 2, "chapter": 1, "dur": 7.0, "priority": "nice",
+             "scene_priority": "nice", "people": [], "era": "西汉", "callout": "",
+             "heading": "第二章", "need": "…"},
+        ],
+    }
+    cfg = load_config()
+
+    src = S.build_sources(need_obj, cfg, fake)
+    check("只给必须剪的槽位出取景单（其余不浪费 token）", len(src["items"]), 1)
+    it = src["items"][0]
+    check("槽位对得上", it["slot"], "s01_sh1")
+    check("模型塞的集数被剪掉", S.FABRICATED.search(it["candidates"][0]["locate"] or ""), None)
+    check_true("剪掉后用占位句说明「已隐去」（不是留空让人以为没定位）",
+               "已隐去" in it["candidates"][0]["locate"], f"→ {it['candidates'][0]['locate']}")
+    check("没编集数的候选原样保留", it["candidates"][1]["locate"], "霍光擅权阶段")
+    check_true("预填的 import 命令绑上同场所有槽位（一条素材填满一场）",
+               "s01_sh1,s01_sh2" in it["import_cmd"], f"→ {it['import_cmd']}")
+
+    # ---- ②b 编号对齐（踩过：enumerate 从 0 起 → 每条候选错位一格）
+    three = dict(need_obj)
+    three["slots"] = [
+        {**need_obj["slots"][0], "slot": "s01_sh1", "scene": 1, "need": "甲画面", "priority": "must"},
+        {**need_obj["slots"][0], "slot": "s02_sh1", "scene": 2, "need": "乙画面", "priority": "must"},
+        {**need_obj["slots"][0], "slot": "s03_sh1", "scene": 3, "need": "丙画面", "priority": "must"},
+    ]
+
+    class _Ordered:
+        def chat_json(self, system, user, **_kw):
+            # 回显收到的清单编号，并按编号给出各自的候选片源
+            self_saw.append([ln.split(". 画面：")[0] for ln in user.splitlines()
+                             if ". 画面：" in ln])
+            return {"shots": [
+                {"index": 1, "keywords": ["甲词"], "candidates": [{"title": "甲剧"}]},
+                {"index": 2, "keywords": ["乙词"], "candidates": [{"title": "乙剧"}]},
+                {"index": 3, "keywords": ["丙词"], "candidates": [{"title": "丙剧"}]},
+            ]}
+
+    self_saw: list[list[str]] = []
+    got3 = S.build_sources(three, cfg, _Ordered())
+    check("发给模型的清单编号从 1 开始（不是 0）", self_saw[0], ["1", "2", "3"])
+    check_true("候选片源跟槽位一一对齐（不整体错位一格）",
+               [i["candidates"][0]["title"] for i in got3["items"]] == ["甲剧", "乙剧", "丙剧"],
+               f"→ {[(i['slot'], i['candidates'][0]['title']) for i in got3['items']]}")
+    check_true("检索式跟着自己的槽位走",
+               all(f"{k} 影视片段" in i["queries"] for k, i in
+                   zip(["甲词", "乙词", "丙词"], got3["items"])),
+               f"→ {[i['queries'][:2] for i in got3['items']]}")
+
+    # ---- ③ 降级：模型挂了也要能用（只有检索式，不编候选）
+    src_dead = S.build_sources(need_obj, cfg, _DeadLLM())
+    check("模型挂了 → 不编候选片源", src_dead["items"][0]["candidates"], [])
+    check_true("模型挂了 → 检索式照出（照搜不误）", bool(src_dead["items"][0]["queries"]),
+               f"→ {src_dead['items'][0]['queries']}")
+    check("llm_used 标明没问出来", src_dead["llm_used"], False)
+
+    # ---- ③b 剧名锚点：给不出主演的要标明「可能编的」，no_footage 要显眼
+    class _Anchors:
+        def chat_json(self, *_a, **_k):
+            return {"shots": [{"index": 1, "keywords": ["托孤"], "candidates": [
+                {"title": "汉武大帝", "year": "2005", "cast": "陈宝国、焦晃"},
+                {"title": "编出来的剧", "year": "2020"},
+            ]}]}
+
+    src_anchor = S.build_sources(need_obj, cfg, _Anchors())
+    md_a = S.to_markdown(src_anchor)
+    check_true("有主演的候选照实显示", "陈宝国" in md_a, "陈宝国")
+    check_true("给不出主演的候选被标「很可能是编的」（模型会编剧名）",
+               "很可能是编的" in md_a, "很可能是编的")
+
+    class _None:
+        def chat_json(self, *_a, **_k):
+            return {"shots": [{"index": 1, "no_footage": True, "keywords": ["无"]}]}
+
+    md_none = S.to_markdown(S.build_sources(need_obj, cfg, _None()))
+    check_true("模型说「没有影视剧拍过」时给出替代方案提示",
+               "没有影视剧拍过" in md_none or "no_footage" in md_none or "回退画面" in md_none,
+               f"→ {md_none[md_none.find('### 1'):][:120]}")
+
+    # ---- ④ 上限
+    many = dict(need_obj)
+    many["slots"] = [{**s, "priority": "must", "scene": i + 1, "slot": f"s{i+1:02d}_sh1"}
+                     for i, s in enumerate([need_obj["slots"][0]] * 20)]
+    cfg2 = load_config()
+    cfg2["needs"]["sources_max_slots"] = 5
+    check("sources_max_slots 生效", len(S.build_sources(many, cfg2, fake)["items"]), 5)
+
+    # ---- ⑤ 写进需求清单（只读一个文件），且排在槽位明细前面
+    md_text = S.to_markdown(src)
+    check_true("取景单标明「未核实」", "未核实" in md_text, "未核实")
+    check_true("取景单给出回填栏（片源/集数/起止时间）",
+               "起止时间" in md_text and "片源 ＝" in md_text)
+    check_true("取景单给出可复制的检索式", "汉武大帝 托孤" in md_text, "汉武大帝 托孤")
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg3 = load_config()
+        cfg3["paths"]["data_dir"] = td
+        md, js = N.save(need_obj, cfg3, None, sources=src)
+        body = md.read_text(encoding="utf-8")
+        check_true("需求清单 .md 里有取景单一节", "## 取景单" in body)
+        check_true("取景单排在槽位明细之前（先看去哪找，再看每场几段）",
+                   body.index("## 取景单") < body.index("## 槽位明细"))
+        p = S.save(src, cfg3)
+        check_true("取景单 json 落盘", p.exists() and "取景单" in p.name, f"→ {p.name}")
+        check("json 里 items 完整", len(json.loads(p.read_text(encoding="utf-8"))["items"]), 1)
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -1858,6 +2027,7 @@ def main() -> int:
     test_topic_levels()
     test_series()
     test_agent_plan_pick()
+    test_sources()
     test_fact_audit()
     test_license_policy()
     test_culture_filter()
