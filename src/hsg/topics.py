@@ -615,10 +615,18 @@ def series_progress(user: UserPool, records: list[dict], series: str = "") -> st
         got = sum(1 for t in eps if t.title in done or _done_by_topic(done, t.title))
         lines.append(f"■ {name}　{user.series.get(name, '（没有系列说明）')}")
         lines.append(f"  进度 {got}/{len(eps)} 集" if eps else "  （这条系列还没有集）")
+        if eps:
+            # 两级都要看得见：L1 类型 + L2 标题/描述。系列里各集落的类型不一样，
+            # 一眼看出「这 10 集分别走哪一路」比一堆标题有用（也才知道有没有偏科）
+            dist: dict[str, int] = {}
+            for t in eps:
+                dist[t.type or "未分类"] = dist.get(t.type or "未分类", 0) + 1
+            lines.append("  类型分布（L1）：" + " / ".join(
+                f"{k} {v}" for k, v in sorted(dist.items(), key=lambda kv: -kv[1])))
         for t in eps:
             hit = done.get(t.title) or _done_by_topic(done, t.title)
             mark = f"✓ 已出（{str(hit.get('generated_at'))[:10]}）" if hit else "· 待做"
-            lines.append(f"    {t.ep or '?':>2}. {t.title}")
+            lines.append(f"    {t.ep or '?':>2}. {t.title}　［{t.type or '未分类'}］")
             lines.append(f"        {mark}　{t.desc or '（没有描述）'}")
         lines.append("")
     return "\n".join(lines)

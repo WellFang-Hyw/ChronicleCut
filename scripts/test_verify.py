@@ -1686,6 +1686,12 @@ def test_series() -> None:
     txt = topics.series_progress(back, [rec], S)
     check_true("进度表标出已出的集", "✓" in txt and "2026-09-15" in txt, f"→ {txt[:120]}")
     check_true("进度表算出进度 1/2", "1/2" in txt, f"→ {txt[:120]}")
+    check_true("进度表带 L1 类型（两级要看得全，不能只有标题）",
+               "类型分布" in txt and "［政变与权力］" in txt, f"→ {txt[:200]}")
+    check_true("类型分布的计数加起来 = 集数",
+               all(int(x.split()[-1]) >= 1 for x in
+                   txt.split("类型分布（L1）：")[1].split("\n")[0].split(" / ")),
+               f"→ {txt.split('类型分布（L1）：')[1].splitlines()[0]}")
     check_true("没建系列时给出建系列的命令（不是空白）",
                "add_topic.py" in topics.series_progress(topics.UserPool(), [], ""))
     check_true("进度表认「成片标题」也能对上（生成记录字段有出入时不误报待做）",

@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（413 项，不调 API）
+run.bat test                              :: 零成本回归测试（415 项，不调 API）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
