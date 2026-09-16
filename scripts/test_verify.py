@@ -1999,6 +1999,28 @@ def test_sources() -> None:
                 {"title": "汉武大帝", "cast": "陈宝国", "episodes_total": 58,
                  "ep_range": "5-40", "in_episode": "中段", "locate": "朝会"}]}]}
 
+    class _Unsure:
+        def chat_json(self, *_a, **_k):
+            return {"shots": [{"index": 1, "keywords": ["x"], "candidates": [
+                {"title": "可能编的剧", "cast": "无", "in_cover": "in"},
+                {"title": "汉武大帝", "cast": "陈宝国", "in_cover": "in"}]}]}
+
+    def _vs(system, user, **_kw):
+        # 自检把「可能编的剧」判为 unsure
+        return {"verdicts": [{"title": "可能编的剧", "verdict": "unsure"},
+                             {"title": "汉武大帝", "verdict": "sure"}]}
+
+    class _UnsureWithCheck(_Unsure):
+        def chat_json(self, system, user, **kw):
+            if "核对员" in system:
+                return _vs(system, user)
+            return super().chat_json(system, user, **kw)
+
+    src_u = S.build_sources(need_obj, cfg, _UnsureWithCheck())
+    check_true("自检怀疑的候选排到最后（别挡在前面）",
+               [c["title"] for c in src_u["items"][0]["candidates"]] == ["汉武大帝", "可能编的剧"],
+               f"→ {[c['title'] for c in src_u['items'][0]['candidates']]}")
+
     md_wide = S.to_markdown(S.build_sources(need_obj, cfg, _Wide()))
     check_true("区间宽到 ≥15 集 → 标「参考价值低」并给替代做法",
                "参考价值低" in md_wide and "空镜" in md_wide,
@@ -2011,6 +2033,75 @@ def test_sources() -> None:
 
     check_true("窄区间不标「参考价值低」（别把有用的也劝退）",
                "参考价值低" not in S.to_markdown(S.build_sources(need_obj, cfg, _Narrow())))
+
+    # ---- ②e 覆盖范围：拍不到这事的剧要剔掉（踩过：把汉武帝驾崩后十几年的事
+    #          推荐给「讲汉武帝一生」的《汉武大帝》，依据还写「应在剧末」）
+    class _Cover:
+        def chat_json(self, *_a, **_k):
+            return {"shots": [{"index": 1, "keywords": ["废帝"], "candidates": [
+                {"title": "汉武大帝", "cast": "陈宝国", "cover_to": "到汉武帝驾崩为止",
+                 "in_cover": "out", "episodes_total": 58, "ep_range": "56-58"},
+                {"title": "云中歌", "cast": "Angelababy", "cover_to": "覆盖昭帝、宣帝两朝",
+                 "in_cover": "in", "episodes_total": 45, "ep_range": "30-44"},
+                {"title": "某剧", "cast": "某人", "cover_to": "说不准 (in_cover 未定)",
+                 "in_cover": "unknown", "episodes_total": 40, "ep_range": "20-30"},
+            ]}]}
+
+    src_cov = S.build_sources(need_obj, cfg, _Cover())
+    titles = [c["title"] for c in src_cov["items"][0]["candidates"]]
+    check_true("范围外的候选被剔掉（不推荐拍不到这事的剧）", "汉武大帝" not in titles, f"→ {titles}")
+    check_true("范围外的记录在案（不静默消失）",
+               any("汉武大帝" in d for d in src_cov["dropped_out_of_cover"]),
+               f"→ {src_cov['dropped_out_of_cover']}")
+    check_true("范围内的候保留", "云中歌" in titles, f"→ {titles}")
+    check_true("没说清覆盖范围的照样给（但标 unknown）",
+               any(c["title"] == "某剧" and c["in_cover"] == "unknown"
+                   for c in src_cov["items"][0]["candidates"]), f"→ {titles}")
+    md_cov = S.to_markdown(src_cov)
+    cov_lines = [l.strip() for l in md_cov.splitlines() if "覆盖到" in l]
+    check_true("渲染出「剧中覆盖到」",
+               any("剧中覆盖到：覆盖昭帝、宣帝两朝" in l for l in cov_lines),
+               f"→ {cov_lines}")
+    check_true("覆盖范围说不准的标「未核实」（范围内/外是模型自述，别当事实）",
+               any("模型自述" in l for l in cov_lines), f"→ {cov_lines}")
+    check_true("模型挂了的时候没有这个字段也不报错",
+               S.build_sources(need_obj, cfg, _DeadLLM())["dropped_out_of_cover"] == [])
+
+    # ---- ②f 多轮合并：模型每轮给的候选都不一样，刷新不该覆盖
+    A = [{"title": "汉武大帝", "confidence": "mid", "cast": "陈宝国"},
+         {"title": "云中歌", "confidence": "high"}]
+    B = [{"title": "汉武大帝", "confidence": "high", "cast": "陈宝国", "ep_range": [56, 58]},
+         {"title": "乌龙闯情关", "confidence": "low"}]
+    m = S.merge_candidates(A, B)
+    check("合并后按剧名去重（3 条，不是 4 条）", [c["title"] for c in m],
+          ["汉武大帝", "云中歌", "乌龙闯情关"])
+    check("重复的剧名保留置信度更高的那条", m[0]["confidence"], "high")
+    check_true("同时补齐字段（不丢上一轮的信息）",
+               m[0].get("cast") == "陈宝国" and m[0].get("ep_range") == [56, 58],
+               f"→ {m[0]}")
+    check("上一轮的候选不会被本轮换掉（云中歌还在）", "云中歌" in [c["title"] for c in m], True)
+    check("空的上轮 → 等于本轮", [c["title"] for c in S.merge_candidates([], B)],
+          ["汉武大帝", "乌龙闯情关"])
+
+    class _Round2:
+        def __init__(self):
+            self.n = 0
+
+        def chat_json(self, *_a, **_k):
+            self.n += 1
+            return {"shots": [{"index": 1, "keywords": ["废帝"], "candidates": (
+                [{"title": "云中歌", "cast": "Angelababy", "in_cover": "in"}]
+                if self.n == 1 else
+                [{"title": "乌龙闯情关", "cast": "孙耀威", "in_cover": "in"}])}]}
+
+    r2 = _Round2()
+    first = S.build_sources(need_obj, cfg, r2)
+    second = S.build_sources(need_obj, cfg, r2, previous=first)
+    check("第二轮把第一轮的候选并进来了（不是覆盖）",
+          [c["title"] for c in second["items"][0]["candidates"]],
+          ["云中歌", "乌龙闯情关"])
+    check("标记出「并过上一轮」", second["merged_from_previous"], True)
+    check("第一轮时没有这个标记", first["merged_from_previous"], False)
 
     # ---- ③b 剧名锚点：给不出主演的要标明「可能编的」，no_footage 要显眼
     class _Anchors:

@@ -110,6 +110,13 @@ def find_latest_metadata(cfg: Config) -> Path | None:
     return cands[0] if cands else None
 
 
+def find_latest_sources(cfg: Config) -> Path | None:
+    """最近一次的取景单（刷新时把它的候选并进来）。"""
+    d = cfg.paths.get_path("data_dir") / "needs"
+    cands = sorted(d.glob("*_取景单.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands[0] if cands else None
+
+
 def find_latest_needs(cfg: Config) -> Path | None:
     d = cfg.paths.get_path("data_dir") / "needs"
     cands = sorted(d.glob("*_素材需求.json"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -469,6 +476,16 @@ def stage_sources(cfg: Config, args) -> int:
     else:
         log.warning("没有现成的需求清单 → 重新生成一份（描述可能与上一次不同）")
 
+    # 上一轮的取景单：并进来而不是覆盖（模型每轮给的候选都不一样）
+    prev_src = None
+    prev_path = find_latest_sources(cfg)
+    if prev_path is not None:
+        try:
+            prev_src = json.loads(Path(prev_path).read_text(encoding="utf-8"))
+            log.info("并入上一轮取景单：%s", Path(prev_path).name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("上一轮取景单读不出来（本轮照常出）：%s", exc)
+
     llm = None
     try:
         if keys.deepseek:
@@ -476,7 +493,7 @@ def stage_sources(cfg: Config, args) -> int:
             llm = LLM(cfg, keys)
         if need_path is None:
             need_obj = needs_mod.build_needs(story, cfg, llm, recorded=recorded)
-        src_obj = sources_mod.build_sources(need_obj, cfg, llm)
+        src_obj = sources_mod.build_sources(need_obj, cfg, llm, previous=prev_src)
     finally:
         if llm is not None:
             llm.close()

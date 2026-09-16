@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（473 项，不调 API）
+run.bat test                              :: 零成本回归测试（489 项，不调 API）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
@@ -281,6 +281,13 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
    「遗诏托孤」被冲成「托孤」）。
 ## 6. 已知的机制性局限（不要试图「优化」掉）
 
+34. **候选必须过「覆盖范围」这一关**：要求模型给 `cover_to`（该剧主线覆盖到哪件事为止）
+   和 `in_cover`（in/out/unknown），`out` 的**直接剔掉**（并记进 `dropped_out_of_cover`，
+   不许静默消失）。踩过：模型把「汉武帝驾崩之后十几年」的废帝、迎立宣帝、霍光之死
+   全都推荐给《汉武大帝》（理由是「应在剧末」），而该剧主线只到武帝驾崩。
+35. **取景单是多轮累积的**（`merge_candidates`）：模型每轮给的候选都不一样，
+   覆盖式刷新等于抽奖。`--stage sources` 会把上一轮的候选并进来（按剧名去重、
+   留置信度更高的、补齐字段），跑几次越攒越全。自检怀疑的排最后。
 33. **集数参考的三条铁律**（用户 2026-09-16 明确要「给个参考」，那就给**参考**、不给**假精确**）：
    ① 允许也只允许给 `ep_range`（推算集数区间）+ `in_episode`（集内**分段词**：前段/中段/集尾）
    + `basis`（推算依据）。**分钟级时间码一律剪掉**（`FABRICATED_TIME`）—— 模型给不准，

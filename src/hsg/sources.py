@@ -108,6 +108,10 @@ _SYSTEM = """你是影视资料编辑，帮纪录片/解说视频的剪辑师找
 3b. **绝对不许编剧名**。实测你这类模型会编出「《霍光传奇》（2020）」这种不存在的剧，
    还标成 high 置信度 —— 剪辑师照着搜一无所获，比空手更糟。
    **每部剧必须同时给出主演或播出平台**（能核实的锚点）；**写不出主演的剧就不要写这条**。
+3d. **必须判断「这部剧拍不拍的到这场戏」**：给 `cover_to`（该剧主线覆盖到哪件事/哪一年为止，
+   如「到汉武帝驾崩为止」）和 `in_cover`（`in` 范围内 / `out` 范围外 / `unknown` 不确定）。
+   **范围外就不要推荐这部**（哪怕主角就是这个人）—— 典型错误：把「汉武帝驾崩之后十几年」
+   才发生的事（废帝、迎立宣帝、霍光之死）推荐给一部「讲汉武帝一生」的剧。
 3c. **如果这场戏你想不出任何影视剧拍过，就直接说「印象中没有拍过」**（no_footage=true），
    并建议替代画面（文物/画像石/纪录片空镜）。宁可说没有，也不要硬凑 —— 按错方向找是白费时间。
 4. 每处再给 2-3 个**检索关键词**（搜素材用）：用观众/UP 主会用来命名那一场戏的词，
@@ -205,6 +209,7 @@ def _ask_llm(slots: list[dict], topic: str, era: str, llm) -> dict[str, dict]:
             f'"candidates": [{{"title": "剧名", "year": "年份（拿不准就空）", '
             f'"cast": "主演（必须给，给不出就别写这条）或播出平台", '
             f'"episodes_total": 58, "ep_range": "56-58", "in_episode": "集尾/中段/前段", '
+            f'"cover_to": "该剧主线覆盖到哪件事为止", "in_cover": "in/out/unknown", '
             f'"locate": "剧情阶段定位", "basis": "推算依据（为什么落在这个位置）", '
             f'"why": "为什么可能有这场戏", '
             f'"confidence": "high/mid/low"}}]}}]}}')
@@ -212,6 +217,7 @@ def _ask_llm(slots: list[dict], topic: str, era: str, llm) -> dict[str, dict]:
         log.warning("取景单的候选片源没问出来（只出检索式，不影响剪素材）：%s", exc)
         return {}
     out: dict[str, dict] = {}
+    dropped: list[str] = []
     for item in (data or {}).get("shots") or []:
         try:
             idx = int(item.get("index"))
@@ -241,8 +247,16 @@ def _ask_llm(slots: list[dict], topic: str, era: str, llm) -> dict[str, dict]:
             if in_ep and not any(w in in_ep for w in IN_EPISODE_WORDS):
                 # 集内位置只认分段词 —— 模型写「12 分 30 秒」这种就丢掉
                 in_ep = ""
+            # 覆盖范围：范围外直接丢（推荐一部拍不到这事的剧 = 让剪辑师白翻）
+            cover_to = str(c.get("cover_to") or "").strip()[:50]
+            in_cover = str(c.get("in_cover") or "").strip().lower()
+            if in_cover in ("out", "范围外", "否", "no", "false"):
+                dropped.append(f"《{title}》{cover_to or '（未写覆盖范围）'}")
+                continue
             cands.append({
                 "title": title[:40],
+                "cover_to": cover_to,
+                "in_cover": "unknown" if in_cover not in ("in", "范围内", "是", "yes", "true") else "in",
                 "cast": str(c.get("cast") or "").strip()[:40],
                 "year": str(c.get("year") or "").strip()[:8],
                 "episodes_total": total,
@@ -263,6 +277,11 @@ def _ask_llm(slots: list[dict], topic: str, era: str, llm) -> dict[str, dict]:
         if cands or kws or no_footage:
             out[slots[idx - 1]["slot"]] = {"candidates": cands, "keywords": kws,
                                            "no_footage": no_footage}
+    if dropped:
+        # 只在最后打一次：原先写在循环里，每处理一个镜头就把累计列表重打一遍（1、2、3…）
+        log.info("丢掉 %d 条「这部剧主线拍不到这场戏」的候选：%s",
+                 len(dropped), "、".join(dict.fromkeys(dropped)))
+    out["__dropped__"] = dropped
     return out
 
 
@@ -301,7 +320,38 @@ def _selfcheck(all_cands: dict[str, list[dict]], llm) -> dict[str, str]:
     return out
 
 
-def build_sources(needs: dict, cfg: Config, llm=None) -> dict:
+def merge_candidates(old: list[dict], new: list[dict]) -> list[dict]:
+    """把上一轮的候选并进本轮（按剧名去重，保留信息更全/置信度更高的那条）。
+
+    为什么要合并：模型每轮给的候选**都不一样**（同一处镜头，这轮给《云中歌》、
+    下轮就不给了）—— 覆盖式刷新等于每次都在抽奖。合并之后跑两三次，
+    候选池就稳定下来，比任何单轮都好用。
+    """
+    rank = {"high": 3, "mid": 2, "low": 1, "": 0}
+    out: dict[str, dict] = {}
+    for c in list(old or []) + list(new or []):
+        t = str(c.get("title") or "")
+        if not t:
+            continue
+        if t not in out:
+            out[t] = dict(c)
+            continue
+        a, b = out[t], c
+        # 置信度高的优先；一样高就取字段更全的
+        if (rank.get(b.get("confidence") or "", 0) > rank.get(a.get("confidence") or "", 0)
+                or (rank.get(b.get("confidence") or "", 0) == rank.get(a.get("confidence") or "", 0)
+                    and sum(1 for v in b.values() if v) > sum(1 for v in a.values() if v))):
+            merged = dict(a)
+            merged.update({k: v for k, v in b.items() if v})
+            out[t] = merged
+    # 保持顺序：先上一轮的（已见过），再本轮新增的
+    order = [str(c.get("title")) for c in (old or []) if c.get("title")]
+    order += [str(c.get("title")) for c in (new or [])
+              if c.get("title") and str(c.get("title")) not in order]
+    return [out[t] for t in order if t in out]
+
+
+def build_sources(needs: dict, cfg: Config, llm=None, previous: dict | None = None) -> dict:
     """为**必须剪**的槽位做取景单（其余槽位不浪费 token，也不淹没重点）。"""
     slots = list(needs.get("slots") or [])
     must = [s for s in slots if str(s.get("priority")) == "must"]
@@ -315,7 +365,8 @@ def build_sources(needs: dict, cfg: Config, llm=None) -> dict:
                "era": s.get("era"), "callout": s.get("callout"), "dur": s.get("dur"),
                "scene": s.get("scene"), "heading": s.get("heading")} for s in must]
     cands = _ask_llm(picked, str(needs.get("topic") or ""), str(needs.get("era") or ""), llm)
-    verdicts = _selfcheck({k: v.get("candidates") or [] for k, v in cands.items()}, llm) \
+    dropped = cands.pop("__dropped__", [])
+    verdicts = _selfcheck({k: (v.get("candidates") or []) for k, v in cands.items()}, llm) \
         if cands else {}
     if verdicts:
         log.info("剧名自检：%d 个剧名，%d 个判为「不确定/可能是编的」", len(verdicts),
@@ -325,14 +376,22 @@ def build_sources(needs: dict, cfg: Config, llm=None) -> dict:
     for s in slots:
         by_scene.setdefault(int(s.get("scene") or 0), []).append(str(s.get("slot")))
 
+    prev_by_slot = {str(i.get("slot")): (i.get("candidates") or [])
+                    for i in (previous or {}).get("items") or []}
+    added = 0
     items: list[dict] = []
     for s in picked:
         slot = str(s["slot"])
         got = cands.get(slot) or {}
-        got_c = got.get("candidates") or []
+        got_c = merge_candidates(prev_by_slot.get(slot) or [], got.get("candidates") or [])
+        added += len([c for c in got_c
+                      if c["title"] not in {str(x.get("title"))
+                                            for x in (prev_by_slot.get(slot) or [])}])
         for c in got_c:
             c["verdict"] = verdicts.get(c["title"], "")
         got_k = got.get("keywords") or []
+        # 自检怀疑的排最后（读的时候先看有把握的，别被编的剧名挡在前面）
+        got_c = sorted(got_c, key=lambda c: 1 if c.get("verdict") == "unsure" else 0)
         items.append({
             **s,
             "candidates": got_c,
@@ -349,10 +408,14 @@ def build_sources(needs: dict, cfg: Config, llm=None) -> dict:
         "era": needs.get("era"),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "llm_used": bool(cands),
+        "dropped_out_of_cover": dropped,
+        "merged_from_previous": bool(previous and added),
         "items": items,
     }
     log.info("取景单：%d 处必须剪的镜头，候选片源 %s",
              len(items), "已出（**未核实**）" if cands else "没问出来（只有检索式）")
+    if previous and added:
+        log.info("并入上一轮的候选：本轮新增 %d 条（不会被覆盖，跑几次会越攒越全）", added)
     return obj
 
 
@@ -368,6 +431,8 @@ def to_markdown(src: dict) -> str:
         "还标成高置信度），所以：**以你能不能搜到为准，不要以本表为准**。",
         "> **集数是推算的区间，不是查证结果** —— 找不到就往前后各推 1–2 集。",
         "> 集内位置只给分段（前段/中段/集尾），**不给分钟数**：分钟级模型给不准、纯编造。",
+        "> 表中已剔掉「这部剧主线拍不到这场戏」的候选（如把汉武帝驾崩后十几年的事推荐给",
+        "> 讲汉武帝一生的剧）；留下的仍以你能搜到为准。",
         "> 用法：**先拿检索式去 B 站/YouTube 搜**（含「剧名 第N集」，整集上传很常见），",
         "> 搜到了从推算位置往前/后翻；搜不到就换下一个候选。",
         "",
@@ -414,6 +479,9 @@ def to_markdown(src: dict) -> str:
                                    "别照区间翻：直接在素材库里找任意同年代的宫廷空镜即可。")
                     if c.get("ep_note"):
                         out.append(f"        - {c['ep_note']}")
+                if c.get("cover_to"):
+                    tail = "" if c.get("in_cover") == "in" else "　（⚠ 覆盖范围是模型自述，未核实）"
+                    out.append(f"        - 剧中覆盖到：{c['cover_to']}{tail}")
                 if c.get("basis"):
                     out.append(f"        - 推算依据：{c['basis']}")
         else:
