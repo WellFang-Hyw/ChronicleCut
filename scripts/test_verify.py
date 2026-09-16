@@ -2221,6 +2221,44 @@ def test_crop_subtitle_band() -> None:
             check_true("上下裁太多（0.8）→ 拦下不乱出片", "太多" in str(exc), f"→ {exc}")
 
 
+def test_pyflakes_gate() -> None:
+    """静态检查：拦住「函数体里引用了没定义的名字」这类只在真跑时才崩的 bug。
+
+    为什么加这道：`agent._prepare_story` 里写了 `tts_mod.TTS(...)` 但模块顶部没 import ——
+    冒烟测试用桩 TTS，永远走不到那行，直到**第一次真跑阶段 2** 才 `NameError` 崩掉。
+    这类错 pyflakes 一秒就能看出来（实测：`undefined name 'tts_mod'`）。
+    只拦「未定义名 / 重复定义」；未用 import 那些是无害噪声，不拦。
+    """
+    print("\n[静态检查 pyflakes：未定义名/重复定义]")
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _P
+
+    root = _P(__file__).resolve().parents[1]
+    targets = sorted(str(p) for p in (root / "src" / "hsg").glob("*.py"))
+    targets += sorted(str(p) for p in (root / "scripts").glob("*.py"))
+    try:
+        proc = subprocess.run([_sys.executable, "-m", "pyflakes", *targets],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", cwd=str(root))
+    except FileNotFoundError:
+        check("没装 pyflakes（pip install pyflakes）", False, "跳过")
+        return
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if "No module named" in out:
+        check("没装 pyflakes（pip install pyflakes）", False, "跳过")
+        return
+    bad = [ln for ln in out.splitlines()
+           if "undefined name" in ln or "redefinition" in ln]
+    noise = len([ln for ln in out.splitlines() if ln.strip()]) - len(bad)
+    check_true("没有「引用了没定义的名字」（真跑才崩的那类）", not bad,
+               f"→ {bad[:3]}")
+    check_true("pyflakes 能跑起来（门槛有效）", proc.returncode in (0, 1),
+               f"rc={proc.returncode}")
+    if noise:
+        print(f"  （另有 {noise} 条无害提示：未用 import / f-string 没占位符，不管）")
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2250,6 +2288,7 @@ def main() -> int:
     test_clip_index()
     test_clip_normalize()
     test_crop_subtitle_band()
+    test_pyflakes_gate()
     test_needs()
     test_edl()
     test_frames()

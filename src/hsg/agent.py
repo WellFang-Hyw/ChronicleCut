@@ -34,6 +34,7 @@ from . import clips as clips_mod
 from . import edl as edl_mod
 from . import needs as needs_mod
 from . import pipeline, sources as sources_mod, storyio, video
+from . import tts as tts_mod
 from .config import ApiKeys, Config, ensure_dirs, provider_banner
 
 log = logging.getLogger("hsg.agent")

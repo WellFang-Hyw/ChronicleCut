@@ -75,16 +75,19 @@ def do_import(a, cfg) -> int:
     dest = idx_path.parent / "norm" / f"{a.id}.mp4"
     print(f"导入 {src.name} → {dest.relative_to(ROOT)}")
     ct, cb = float(getattr(a, "crop_top", 0.0) or 0.0), float(getattr(a, "crop_bottom", 0.0) or 0.0)
+    cr = float(getattr(a, "crop_right", 0.0) or 0.0)
     tc = (f"　取源片 {a.in_ or '0:00'}–{a.out or '末'}" if (a.in_ or a.out) else "　取源片全段")
     print(f"  目标规格 {spec.get('width')}x{spec.get('height')}@{spec.get('fps')}"
           f"　单段上限 {max_sec:.0f}s　去音轨 ✓{tc}"
-          + (f"　裁上 {ct:.0%}/裁下 {cb:.0%}" if (ct or cb) else ""))
+          + (f"　裁上 {ct:.0%}/裁下 {cb:.0%}/裁右 {cr:.0%}" if (ct or cb or cr) else ""))
     try:
         got = clips.normalize_clip(src, dest, spec, max_sec,
                                   src_in=to_seconds(a.in_), src_out=to_seconds(a.out),
                                   preset=str(getattr(a, "preset", "") or ""),
                                   crop_top=float(getattr(a, "crop_top", 0.0) or 0.0),
-                                  crop_bottom=float(getattr(a, "crop_bottom", 0.0) or 0.0))
+                                  crop_bottom=float(getattr(a, "crop_bottom", 0.0) or 0.0),
+                                  crop_left=float(getattr(a, "crop_left", 0.0) or 0.0),
+                                  crop_right=float(getattr(a, "crop_right", 0.0) or 0.0))
     except Exception as exc:  # noqa: BLE001
         print(f"✗ 规范化失败：{exc}")
         return 4
@@ -103,6 +106,7 @@ def do_import(a, cfg) -> int:
         # 举证用：用了源片的哪一段（这是「合理引用」能说清范围的关键）
         "src_in_sec": got.get("src_in"), "src_out_sec": got.get("src_out"),
         "crop_top": got.get("crop_top"), "crop_bottom": got.get("crop_bottom"),
+        "crop_left": got.get("crop_left"), "crop_right": got.get("crop_right"),
         "rights": a.rights or (
             f"{a.title or '?'}（{a.year or '?'}）· 合理引用，单段≤{max_sec:.0f}s，已去原声"
             + (f"，取源片 {_tc(got.get('src_in'))}–{_tc(got.get('src_out'))}"
@@ -220,6 +224,10 @@ def main() -> int:
                          "对白字幕；裁完不出黑边（之后按 increase+crop 铺满画幅）")
     ap.add_argument("--crop-top", dest="crop_top", type=float, default=0.0,
                     help="裁掉顶部一条带（比例，0.06 = 6%%）。用于去掉台标/水印")
+    ap.add_argument("--crop-right", dest="crop_right", type=float, default=0.0,
+                    help="裁掉右侧一条带（比例）。用于去掉右侧竖排剧名水印")
+    ap.add_argument("--crop-left", dest="crop_left", type=float, default=0.0,
+                    help="裁掉左侧一条带（比例）")
     ap.add_argument("--preset", default="",
                     help="x264 preset（留空=x264 默认 medium；批量导入可用 ultrafast 提速）")
     a = ap.parse_args()

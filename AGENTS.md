@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（498 项，不调 API）
+run.bat test                              :: 零成本回归测试（500 项，不调 API）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
 run.bat history [--backfill]              :: 生成记录 / 选题去重
@@ -344,6 +344,16 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
    高度用 `trunc(.../2)*2` 取偶数（yuv420p 不吃奇数）；上下加起来 ≥0.6 直接拦下。
    **裁了多少必须入档**（`crop_top`/`crop_bottom` 进素材库记录 → 出现在「素材出处清单」的
    「裁切」列）—— 发布举证时要能说清"已裁去底部 14%（源片硬字幕）"。
+38. **阶段 2 必须在「真跑一次」之后才算验过** —— 冒烟测试用桩 TTS/桩 LLM，
+   走不到真实分支。踩过：`agent._prepare_story` 里写了 `tts_mod.TTS(...)` 但顶部没 import，
+   冒烟永远发现不了，**第一次真跑阶段 2 直接 NameError**。
+   现在有静态门槛（`test_pyflakes_gate`：拦住 undefined name / redefinition），
+   改完 agent 相关代码先跑 `run.bat test`。
+39. **裁切支持四个边**（`crop_top/bottom/left/right`）：影视源的角标（台标、剧名竖排）
+   可能在上、下、左、右任一条边，甚至**不在画面边缘而在画面里面**。
+   踩过：一开始按"台标在黑边里"裁上下，结果台标和右侧竖排剧名都在画面区内。
+   **必须按像素量位置**（逐行亮度剖面 + 分格近白/偏黄像素计数），不许目测估。
+
 37. **取源片段的时间码必须入档**（`--in/--out` → `src_in_sec`/`src_out_sec` → 举证清单的
    「取源片段」列）。「合理引用」最说不清的就是"用了哪一段"，这一列就是答案。
 

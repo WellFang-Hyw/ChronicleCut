@@ -1,4 +1,201 @@
 {
  "version": 1,
- "clips": []
+ "clips": [
+  {
+   "id": "hg_tuogu",
+   "file": "norm/hg_tuogu.mp4",
+   "dur": 7.0,
+   "width": 1920,
+   "height": 1080,
+   "fps": "30/1",
+   "title": "汉武大帝",
+   "year": "2005",
+   "people": [
+    "汉武帝",
+    "霍光",
+    "刘弗陵"
+   ],
+   "era": "西汉",
+   "topic": [],
+   "slots": [
+    "s01_sh1",
+    "s01_sh2",
+    "s01_sh3",
+    "s01_sh4"
+   ],
+   "desc": "汉武帝临终把幼子刘弗陵托付霍光",
+   "note": "",
+   "src_file": "D:\\剧集\\《汉武大帝》 第58集（大结局） - Google Chrome 2026-09-16 18-35-25.mp4",
+   "src_in_sec": 6.0,
+   "src_out_sec": 13.0,
+   "crop_top": 0.17,
+   "crop_bottom": 0.185,
+   "crop_left": 0.0,
+   "crop_right": 0.03,
+   "rights": "汉武大帝（2005）· 合理引用，单段≤10s，已去原声，取源片 0:06–0:13，已裁去底部 18%（源片硬字幕），已裁去顶部 17%（源片台标/水印）"
+  },
+  {
+   "id": "hg_qunchen",
+   "file": "norm/hg_qunchen.mp4",
+   "dur": 7.0,
+   "width": 1920,
+   "height": 1080,
+   "fps": "30/1",
+   "title": "汉武大帝",
+   "year": "2005",
+   "people": [
+    "汉武帝",
+    "霍光",
+    "刘弗陵"
+   ],
+   "era": "西汉",
+   "topic": [],
+   "slots": [
+    "s04_sh1",
+    "s04_sh2",
+    "s04_sh3",
+    "s04_sh4"
+   ],
+   "desc": "武帝召群臣入内（众人趋前）",
+   "note": "",
+   "src_file": "D:\\剧集\\《汉武大帝》 第58集（大结局） - Google Chrome 2026-09-16 18-35-25.mp4",
+   "src_in_sec": 24.0,
+   "src_out_sec": 31.0,
+   "crop_top": 0.17,
+   "crop_bottom": 0.185,
+   "crop_left": 0.0,
+   "crop_right": 0.03,
+   "rights": "汉武大帝（2005）· 合理引用，单段≤10s，已去原声，取源片 0:24–0:31，已裁去底部 18%（源片硬字幕），已裁去顶部 17%（源片台标/水印）"
+  },
+  {
+   "id": "hg_yiyi",
+   "file": "norm/hg_yiyi.mp4",
+   "dur": 7.03,
+   "width": 1920,
+   "height": 1080,
+   "fps": "30/1",
+   "title": "汉武大帝",
+   "year": "2005",
+   "people": [
+    "汉武帝",
+    "霍光",
+    "刘弗陵"
+   ],
+   "era": "西汉",
+   "topic": [],
+   "slots": [
+    "s07_sh1",
+    "s07_sh2",
+    "s07_sh3"
+   ],
+   "desc": "殿上人物特写（议事氛围）",
+   "note": "",
+   "src_file": "D:\\剧集\\《汉武大帝》 第58集（大结局） - Google Chrome 2026-09-16 18-35-25.mp4",
+   "src_in_sec": 30.0,
+   "src_out_sec": 37.0,
+   "crop_top": 0.17,
+   "crop_bottom": 0.185,
+   "crop_left": 0.0,
+   "crop_right": 0.03,
+   "rights": "汉武大帝（2005）· 合理引用，单段≤10s，已去原声，取源片 0:30–0:37，已裁去底部 18%（源片硬字幕），已裁去顶部 17%（源片台标/水印）"
+  },
+  {
+   "id": "hg_diannei",
+   "file": "norm/hg_diannei.mp4",
+   "dur": 7.0,
+   "width": 1920,
+   "height": 1080,
+   "fps": "30/1",
+   "title": "汉武大帝",
+   "year": "2005",
+   "people": [
+    "汉武帝",
+    "霍光",
+    "刘弗陵"
+   ],
+   "era": "西汉",
+   "topic": [],
+   "slots": [
+    "s10_sh1",
+    "s10_sh2",
+    "s10_sh3",
+    "s10_sh4"
+   ],
+   "desc": "殿内幔帐空镜（氛围）",
+   "note": "",
+   "src_file": "D:\\剧集\\《汉武大帝》 第58集（大结局） - Google Chrome 2026-09-16 18-35-25.mp4",
+   "src_in_sec": 12.0,
+   "src_out_sec": 19.0,
+   "crop_top": 0.17,
+   "crop_bottom": 0.185,
+   "crop_left": 0.0,
+   "crop_right": 0.03,
+   "rights": "汉武大帝（2005）· 合理引用，单段≤10s，已去原声，取源片 0:12–0:19，已裁去底部 18%（源片硬字幕），已裁去顶部 17%（源片台标/水印）"
+  },
+  {
+   "id": "hg_baofu",
+   "file": "norm/hg_baofu.mp4",
+   "dur": 7.07,
+   "width": 1920,
+   "height": 1080,
+   "fps": "30/1",
+   "title": "汉武大帝",
+   "year": "2005",
+   "people": [
+    "汉武帝",
+    "霍光",
+    "刘弗陵"
+   ],
+   "era": "西汉",
+   "topic": [],
+   "slots": [
+    "s13_sh1",
+    "s13_sh2",
+    "s13_sh3"
+   ],
+   "desc": "霍光抱起小弗陵（托付完成）",
+   "note": "",
+   "src_file": "D:\\剧集\\《汉武大帝》 第58集（大结局） - Google Chrome 2026-09-16 18-35-25.mp4",
+   "src_in_sec": 60.0,
+   "src_out_sec": 67.0,
+   "crop_top": 0.17,
+   "crop_bottom": 0.185,
+   "crop_left": 0.0,
+   "crop_right": 0.03,
+   "rights": "汉武大帝（2005）· 合理引用，单段≤10s，已去原声，取源片 1:00–1:07，已裁去底部 18%（源片硬字幕），已裁去顶部 17%（源片台标/水印）"
+  },
+  {
+   "id": "hg_linzhong",
+   "file": "norm/hg_linzhong.mp4",
+   "dur": 6.87,
+   "width": 1920,
+   "height": 1080,
+   "fps": "30/1",
+   "title": "汉武大帝",
+   "year": "2005",
+   "people": [
+    "汉武帝",
+    "霍光",
+    "刘弗陵"
+   ],
+   "era": "西汉",
+   "topic": [],
+   "slots": [
+    "s16_sh1",
+    "s16_sh2",
+    "s16_sh3",
+    "s16_sh4"
+   ],
+   "desc": "武帝临终特写",
+   "note": "",
+   "src_file": "D:\\剧集\\《汉武大帝》 第58集（大结局） - Google Chrome 2026-09-16 18-35-25.mp4",
+   "src_in_sec": 66.0,
+   "src_out_sec": 72.85,
+   "crop_top": 0.17,
+   "crop_bottom": 0.185,
+   "crop_left": 0.0,
+   "crop_right": 0.03,
+   "rights": "汉武大帝（2005）· 合理引用，单段≤10s，已去原声，取源片 1:06–1:13，已裁去底部 18%（源片硬字幕），已裁去顶部 17%（源片台标/水印）"
+  }
+ ]
 }
