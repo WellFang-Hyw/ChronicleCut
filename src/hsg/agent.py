@@ -362,7 +362,7 @@ def _source_report(cfg: Config, story, edl: dict, index: dict) -> Path:
               f"- **切片占比：{share:.1%}**（合规上限 "
               f"{float(cfg.clips.get('max_share', 0.45)):.0%}）",
               f"- 单段上限：{float(cfg.clips.get('max_seconds', 10)):.0f} 秒（全部已去音轨）", "",
-              "| 素材 id | 片名 | 年份 | 人物 | 时长占比 | 用在分镜 | 取源片段 | 裁切 | 描述 |",
+              "| 素材 id | 片名 | 年份 | 人物 | 使用时长 | 用在分镜 | 取源片段 | 裁切 | 描述 |",
               "|---|---|---|---|---|---|---|---|---|"]
     for cid, rec in sorted(used.items()):
         c = by_id.get(cid, {})
