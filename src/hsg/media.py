@@ -491,10 +491,10 @@ def build_cover(
     margin_x = int(tw * 0.08)
 
     # ---------------- 背景（橙色风格：底图不管什么颜色，一律往橙色拉一遍）
-    base_rgb = hex_rgb(cfg.video.get("cover_base", "#5A2A0C"), (90, 42, 12))
-    tint_rgb = hex_rgb(cfg.video.get("cover_tint", "#C2571A"), (194, 87, 26))
-    tint_alpha = float(cfg.video.get("cover_tint_alpha", 0.62))
-    warm_dark = hex_rgb(cfg.video.get("cover_scrim", "#1A0A02"), (26, 10, 2))
+    base_rgb = hex_rgb(cfg.video.get("cover_base", "#C07020"), (192, 112, 32))
+    tint_rgb = hex_rgb(cfg.video.get("cover_tint", "#F0A22A"), (240, 162, 42))
+    tint_alpha = float(cfg.video.get("cover_tint_alpha", 0.78))
+    warm_dark = hex_rgb(cfg.video.get("cover_scrim", "#2A1405"), (42, 20, 5))
     bg = None
     if image_path and Path(image_path).exists():
         try:
@@ -510,7 +510,7 @@ def build_cover(
         bg = Image.blend(bg, Image.new("RGB", (tw, th), tint_rgb),
                          min(1.0, max(0.0, tint_alpha)))
     # 封面比画面压得更暗 —— 标题大、要压得住图（压暗也用暖色，别拉回冷调）
-    darken = float(cfg.video.get("cover_darken", 0.5))
+    darken = float(cfg.video.get("cover_darken", 0.10))
     if darken > 0:
         bg = Image.blend(bg, Image.new("RGB", (tw, th), warm_dark),
                          min(0.85, max(0.0, darken)))

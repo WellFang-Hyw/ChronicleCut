@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import clips as clips_mod
+from . import comic as comic_mod
 from .config import Config
 from .models import Story
 
@@ -116,8 +117,10 @@ def _fallback_shots(rows: list[dict], scene_dur: float, cfg: Config) -> list[Sho
         if left <= 1e-6:
             break
         dur = min(float(r.get("dur") or 0) or left, left)
-        if bool(cfg.comic.get("enabled", False)):
-            # 四格漫画路线（用户 2026-09-17）：槽位就是一张四格，画面由它铺满
+        # 四格漫画：**出了图才用**（按槽位找图）。没出图的槽位照旧用生成的配图 ——
+        # 这样 6 个章节开场的槽位是漫画、其余是历史图像，不必为了统一把 66 个槽位都出漫画。
+        if (bool(cfg.comic.get("enabled", False))
+                and comic_mod.sheet_for(cfg, str(r.get("slot"))) is not None):
             kind, treat, note = "comic", "plain", "四格漫画（按槽位生成）"
         else:
             kind = "generate" if str(r.get("fallback")) == "generate" else "still"
@@ -298,7 +301,10 @@ def direct_edl(story: Story, needs: dict, index: dict, cfg: Config, llm) -> dict
 def build_edl(story: Story, needs: dict, index: dict, cfg: Config, llm=None) -> dict:
     """产出整期 EDL。没有素材的分镜走回退，有素材的交给 AI 导演（失败则规则兜底）。"""
     tail = float(cfg.video.get("tail_padding", 0.55))
-    directed = direct_edl(story, needs, index, cfg, llm)
+    # clips.enabled=false（用户 2026-09-17：镜头全部用生成图）：连"挑素材"都不做 ——
+    # 否则 AI 导演仍会按绑定切片排镜头，等于白问一轮、还可能把切片带进成片。
+    use_clips = bool(cfg.clips.get("enabled", True))
+    directed = direct_edl(story, needs, index, cfg, llm) if use_clips else {}
     scenes: list[ScenePlan] = []
     for s in story.all_scenes:
         if s.duration <= 0:
@@ -310,8 +316,9 @@ def build_edl(story: Story, needs: dict, index: dict, cfg: Config, llm=None) -> 
         people: list[str] = []
         for r in rows:
             people.extend([str(x) for x in (r.get("people") or [])])
-        cands = scene_candidates(index, s.index, people=people, era=story.period or "",
-                                allow_era_match=bool(cfg.edl.get("allow_era_match", False)))
+        cands = (scene_candidates(index, s.index, people=people, era=story.period or "",
+                                  allow_era_match=bool(cfg.edl.get("allow_era_match", False)))
+                 if use_clips else [])
         if s.index in directed:
             shots = directed[s.index]
         elif cands:

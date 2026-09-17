@@ -126,6 +126,10 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
 
     # ---- 素材库指向临时目录（绝不碰 data/clips 里的人工素材）
+    # 冒烟测的就是**切片链路**，而全局配置现在是 clips.enabled=false（用户要求镜头全用生成图）
+    # → 这里必须显式打开，否则整条链路都跑不到。（测试不该依赖全局开关。）
+    cfg.clips["enabled"] = True
+    cfg.comic["enabled"] = False      # 冒烟测切片链路，漫画另有用例（免得回退判断被漫画顶掉）
     cfg.clips["dir"] = str(work / "clips")
     cfg.clips["index"] = str(work / "clips" / "index.json")
     cfg.story["intro_speak"] = False          # 片头不合成语音 → 零 API

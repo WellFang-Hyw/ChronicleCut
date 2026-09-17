@@ -1212,6 +1212,11 @@ def test_edl() -> None:
 
     # ---- 整期装配
     from hsg.models import Chapter, Scene, Story
+    # ⚠️ 全局配置现在是 clips.enabled=false（用户要求镜头全部用生成图）。
+    # 这个用例测的就是**切片链路**，必须自己把开关打开 —— 测试不该依赖全局配置，
+    # 否则哪天改了默认值，这里会以"看不出原因"的方式挂掉。
+    cfg.clips["enabled"] = True
+    cfg.comic["enabled"] = False
     story = Story(topic="三国", title="曹操杀吕伯奢", period="东汉末", chapters=[
         Chapter(index=1, heading="逃亡路上", scenes=[
             Scene(index=1, text="字" * 40, chapter_index=1, is_chapter_start=True),
@@ -2619,6 +2624,89 @@ def test_render_kicker_shape() -> None:
     check_true("渲染路径没有自己拼 kicker（必须走 kicker_text）", not bad, f"发现 {len(bad)} 处")
 
 
+def test_bright_amber_cover_and_no_clips() -> None:
+    """封面=明亮橙黄（用户 2026-09-17 指定）；clips.enabled=false → 成片里一个切片都没有。"""
+    print("\n[明亮橙黄封面 + 不用切片的 EDL]")
+    import tempfile
+    from collections import Counter
+    from pathlib import Path as _P
+
+    from PIL import Image
+
+    from hsg import edl as edl_mod
+    from hsg import media
+    from hsg.config import load_config
+    from hsg.models import Chapter, Scene, Story
+
+    cfg = load_config()
+
+    # ---- 封面：拿一张**偏暗的**合成图当底（真实配图就是暗的），看橙色够不够亮
+    with tempfile.TemporaryDirectory() as td:
+        nd = _P(td)
+        dark = nd / "dark.jpg"
+        Image.new("RGB", (900, 675), (58, 50, 46)).save(dark, quality=95)
+        cv = media.build_cover(nd / "cv.jpg", (1920, 1080), cfg,
+                               title="霍光废帝：一个臣子凭什么能换掉皇帝？",
+                               kicker="历史小故事 · 古代十大权臣 第1集",
+                               subtitle="西汉昭帝、宣帝年间，公元前1世纪中叶",
+                               foot="一盏茶的时间，听一段旧事", image_path=dark)
+        px = list(Image.open(cv).convert("RGB").resize((60, 34)).get_flattened_data())
+        r = sum(p[0] for p in px) / len(px)
+        g = sum(p[1] for p in px) / len(px)
+        b = sum(p[2] for p in px) / len(px)
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        check_true(f"暗底图也压成橙黄（R{r:.0f} G{g:.0f} B{b:.0f}）", r > g > b,
+                   f"→ R{r:.0f} G{g:.0f} B{b:.0f}")
+        check_true(f"橙黄够暖（R-B={r - b:.0f}，要 >60）", r - b > 60, f"→ {r - b:.0f}")
+        check_true(f"够明亮（亮度 {luma:.0f}，要 ≥85）", luma >= 85, f"→ {luma:.0f}")
+        check_true(f"偏黄不偏红（R-G={r - g:.0f}，要 ≥20）", r - g >= 20, f"→ {r - g:.0f}")
+
+    # ---- EDL：clips.enabled=false 时不许出切片镜头
+    def _mk_story():
+        return Story(topic="t", title="测试集", series="古代十大权臣", series_ep=1,
+                     chapters=[Chapter(index=1, heading="第一章", scenes=[
+                         Scene(index=1, text="旁白一", chapter_index=1, duration=12.0),
+                         Scene(index=2, text="旁白二", chapter_index=1, duration=12.0)])])
+    # ⚠️ 槽位名必须是约定的 s01_sh1（候选是按 scene+shot 反推槽位名匹配的），
+    # 所以为了"漫画只在有图时才用"这条用例，必须把 comic.dir 指到临时目录 ——
+    # 磁盘上真有 data/comics/s01_sh1.jpg，不隔离的话这条用例会测到别的期去。
+    needs = {"slots": [
+        {"scene": 1, "slot": "s01_sh1", "chapter": 1, "dur": 6.0, "callout": "托孤",
+         "narration": "旁白一", "fallback": "generate"},
+        {"scene": 1, "slot": "s01_sh2", "chapter": 1, "dur": 6.0, "narration": "旁白一"},
+        {"scene": 2, "slot": "s02_sh1", "chapter": 1, "dur": 6.0, "narration": "旁白二"},
+        {"scene": 2, "slot": "s02_sh2", "chapter": 1, "dur": 6.0, "narration": "旁白二"}]}
+    index = {"version": 1, "clips": [{"id": "hg_tuogu", "file": "norm/hg_tuogu.mp4", "dur": 7.0,
+                                      "title": "汉武大帝", "year": "2005", "people": ["霍光"],
+                                      "era": "西汉", "slots": ["s01_sh1"], "desc": "托孤"}]}
+
+    comic_dir = _P(td) / "comics"      # 隔离：这里没有漫画图
+    cfg_off = load_config()
+    cfg_off.comic["dir"] = str(comic_dir)
+    cfg_off.clips["enabled"] = False
+    e_off = edl_mod.build_edl(_mk_story(), needs, index, cfg_off, None)
+    k_off = Counter(s["kind"] for p in e_off["scenes"] for s in p["shots"])
+    check("clips.enabled=false：一个切片/复用镜头都没有",
+          k_off.get("clip", 0) + k_off.get("reuse", 0), 0)
+    check("clips.enabled=false：切片占比为 0", edl_mod.clip_share(e_off), 0.0)
+
+    cfg_on = load_config()
+    cfg_on.comic["dir"] = str(comic_dir)
+    cfg_on.clips["enabled"] = True
+    e_on = edl_mod.build_edl(_mk_story(), needs, index, cfg_on, None)
+    k_on = Counter(s["kind"] for p in e_on["scenes"] for s in p["shots"])
+    check_true("对照：打开切片时那条绑定素材会被用上",
+               k_on.get("clip", 0) + k_on.get("reuse", 0) >= 1, str(dict(k_on)))
+
+    # ---- 漫画只在**出了图**时才用（没图的槽位照旧生成图）
+    cfg_c = load_config()
+    cfg_c.comic["dir"] = str(comic_dir)
+    cfg_c.comic["enabled"] = True
+    e_c = edl_mod.build_edl(_mk_story(), needs, index, cfg_c, None)
+    k_c = Counter(s["kind"] for p in e_c["scenes"] for s in p["shots"])
+    check("没出过漫画图的槽位不会写成 comic（免得渲染层空等）", k_c.get("comic", 0), 0)
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2649,6 +2737,7 @@ def main() -> int:
     test_comic()
     test_image_reuse()
     test_render_kicker_shape()
+    test_bright_amber_cover_and_no_clips()
     test_clip_index()
     test_clip_normalize()
     test_crop_subtitle_band()

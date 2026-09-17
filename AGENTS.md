@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（551 项，不调 API）
+run.bat test                              :: 零成本回归测试（559 项，不调 API）
 run.bat comic --must-only                  :: 四格漫画素材（扩写 → image-01 出图 → 提示词清单）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
@@ -120,7 +120,7 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
 需求清单必须排在剪素材**之前**：剪素材是最慢的人工环节，先剪后配会剪一堆用不上的。
 架构与分工见 `docs\Agent应用架构.md`。
 
-**改完代码先跑 `run.bat test`**（551 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（559 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -409,6 +409,15 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
    且上次的提示词（`_sources.json` 的 attempts 里）跟这次**一模一样**才复用，
    否则重出；`--force` 强制重出。为什么要它：一次重渲会把 18 张图重烧一遍
    （约 10 分钟 + 额度），而重渲通常只是想换开场白/布局。**关了它 = 每渲一次烧一次钱**。
+
+45. **镜头素材现在是「全生成」**（用户 2026-09-17 定）：`clips.enabled: false` +
+   `comic.enabled: true`。含义：① `build_edl` 不挑素材（连导演都不问）→ 切片占比恒为 0；
+   ② 有漫画图的槽位用四格漫画（`data/comics/<slot>.jpg`，「出了图才用」），
+   其余槽位用 AI 生成的配图（`data/images/scene_XXX.jpg`，复用见护栏 44）。
+   素材库仍在 `data/clips`（没删）——想回到"切片 + 生成图"混排，把 `clips.enabled` 改回 true 即可。
+   ⚠️ **改这个开关会让一批测试/冒烟挂掉**，它们测的是切片链路、却依赖全局默认值：
+   正确的做法是让它们**显式打开**（已经这么改了），而不是把全局开关改回去。
+   同理，写新用例时若涉及漫画，务必把 `comic.dir` 指到临时目录 —— 磁盘上真有你自己的漫画图。
 
 ## 6. 已知的机制性局限（不要试图「优化」掉）
 
