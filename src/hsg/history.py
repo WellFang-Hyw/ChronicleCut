@@ -79,6 +79,32 @@ def load(cfg: Config) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def upsert_record(cfg: Config, record: dict) -> tuple[Path, Path, bool]:
+    """按标题「更新或追加」一条记录。返回 (json 路径, markdown 路径, 是否更新了已有记录)。
+
+    为什么需要 upsert（而 pipeline 那边是纯 append）：**阶段 2 可以反复重跑** ——
+    换个开场白重出、补一版竖屏，都是同一期再渲染一次。纯 append 会让记录里堆出
+    同一期的多份副本：进度看着不错，但「库里到底出过哪些期」这件事开始分叉
+    （素材出处、查重口径都按最后一次为准才符合事实）。
+    """
+    records = load(cfg)
+    key = norm(str(record.get("title") or ""))
+    updated = False
+    if key:
+        for i, r in enumerate(records):
+            if norm(str(r.get("title") or "")) == key:
+                # 记住第一次出片的时间：重渲染不该把「这期是几号做的」往后推
+                record.setdefault("first_generated_at", r.get("generated_at") or "")
+                records[i] = record
+                updated = True
+                break
+    if not updated:
+        records.append(record)
+    p = save(cfg, records)
+    log.info("生成记录已%s：%s（第 %d 条）", "更新" if updated else "追加", p, len(records))
+    return p, md_path(cfg), updated
+
+
 def save(cfg: Config, records: list[dict]) -> Path:
     p = history_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +338,27 @@ def _probe_outputs(outputs: list[str], cfg: Config | None = None) -> dict[str, f
     return out
 
 
+def _rendered_for(out_dir: Path, title: str) -> list[Path]:
+    """这一期在 output 目录里已经渲出来的成片（横版/竖版都算）。
+
+    文件名用的是 `pipeline.safe_filename(title)`（截 40 字），这里按同一规则拼，
+    所以能对齐上。>1KB 的尺寸门槛是用来排除半途失败的空壳文件的。
+    """
+    from .pipeline import safe_filename
+
+    stem = safe_filename(title)
+    if not stem:
+        return []
+    out: list[Path] = []
+    for p in sorted(out_dir.glob(f"*_{stem}_*.mp4")):
+        try:
+            if p.stat().st_size > 1024:
+                out.append(p)
+        except OSError:
+            continue
+    return out
+
+
 def backfill_from_metadata(cfg: Config) -> int:
     """把 data/output 下已存在的 metadata.json 补进记录（历史产物较多时用）。
 
@@ -327,18 +374,36 @@ def backfill_from_metadata(cfg: Config) -> int:
             data = json.loads(f.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
-        # 只写过稿、没出语音/成片的试跑（plan）不算一期
-        if data.get("plan_only"):
-            continue
         title = str(data.get("title") or "")
         if not title or norm(title) in have:
             continue
+        # 「只写稿」的 plan 产物默认不算一期 —— 但**成片已经躺在 output 里**的除外。
+        # 为什么要有这个例外：阶段式流程（agent --stage 1/2）的稿子全是 plan 产物，
+        # 而阶段 2 直到 2026-09-17 才补上「出片后写记录」这一步；在那之前的期
+        # （如《古代十大权臣》第 1 集，成片都在）在生成记录里是空白 ——
+        # 系列进度因此显示 0/N、「下一集」还会挑回第 1 集。这条把它们认回来。
+        rendered = _rendered_for(out_dir, title)
+        if data.get("plan_only") and not rendered:
+            continue
+        outputs = [str(p) for p in rendered] or [str(x) for x in (data.get("outputs") or [])]
         ts = str(data.get("generated_at") or "")
+        if not ts:
+            # plan 产物没记生成时间（它本来只是中间稿）→ 用文件时间兜底
+            ts = datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
         rid = re.sub(r"[^0-9]", "", ts)[:14] or f"backfill-{added + 1}"
         if rid in have:
             continue
         scenes = [s for c in data.get("chapters") or [] for s in c.get("scenes") or []]
         timeline = data.get("timeline") or []
+        # 语音时长：优先用实测值；plan 产物里还没合成语音（全 0），按字数估一个
+        secs = float(data.get("total_seconds") or 0)
+        estimated = False
+        if secs <= 0:
+            secs = round(sum(float(s.get("seconds") or 0) for s in scenes), 1)
+        if secs <= 0:
+            rate = float(cfg.story.get("chars_per_second") or 4.7) or 4.7
+            secs = round(sum(len(str(s.get("text") or "")) for s in scenes) / rate, 1)
+            estimated = True
         rec = {
             "run_id": rid,
             "generated_at": ts,
@@ -352,19 +417,21 @@ def backfill_from_metadata(cfg: Config) -> int:
             "chapters": len(data.get("chapters") or []),
             "scenes": len(scenes),
             "chars": sum(len(str(s.get("text") or "")) for s in scenes),
-            "speech_seconds": round(float(data.get("total_seconds") or 0), 1),
-            "speech_minutes": round(float(data.get("total_seconds") or 0) / 60, 2),
-            "video_seconds": _probe_outputs(data.get("outputs") or [], cfg),
+            "speech_seconds": secs,
+            "speech_minutes": round(secs / 60, 2),
+            "speech_estimated": estimated,
+            "video_seconds": _probe_outputs(outputs, cfg),
             "images": {"total": len(scenes),
                        "found": sum(1 for s in scenes if s.get("image")),
                        "fallback": sum(1 for s in scenes if not s.get("image"))},
             "verify": (data.get("verify") or {}),
             "material": (data.get("material") or {}),
-            "outputs": list(data.get("outputs") or []),
+            "outputs": outputs,
             "script": "",
             "metadata": str(f),
             "elapsed_seconds": 0.0,
             "backfilled": True,
+            "plan_metadata": str(f) if data.get("plan_only") else "",
             "text_model": "",
             "tts": "",
         }

@@ -388,5 +388,98 @@
     "elapsed_seconds": 589.4,
     "text_model": "deepseek/deepseek-chat",
     "tts": "minimax/hsg_story_v2"
+  },
+  {
+    "run_id": "20260917165309",
+    "generated_at": "2026-09-17T16:53:09",
+    "topic": "霍光：一个臣子凭什么能换掉皇帝？",
+    "topic_type": "政变与权力",
+    "series": "古代十大权臣",
+    "series_ep": 1,
+    "topic_desc": "从受遗诏辅政到废立天子：他手里的权从哪来、满朝文武为什么拦不住、死后家族是什么结局。",
+    "title": "霍光废帝：一个臣子凭什么能换掉皇帝？",
+    "period": "西汉昭帝、宣帝年间，公元前1世纪中叶",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2209,
+    "speech_seconds": 470.0,
+    "speech_minutes": 7.83,
+    "speech_estimated": true,
+    "video_seconds": {
+      "landscape": 535.65
+    },
+    "images": {
+      "total": 18,
+      "found": 0,
+      "fallback": 18
+    },
+    "verify": {},
+    "material": {
+      "topic": "霍光：一个臣子凭什么能换掉皇帝？",
+      "queries": [
+        {
+          "query": "霍光：一个臣子凭什么能换掉皇帝？",
+          "hits": 8
+        }
+      ],
+      "items": 8,
+      "provider": "bing"
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260916_霍光废帝：一个臣子凭什么能换掉皇帝？_横屏.mp4",
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_霍光废帝：一个臣子凭什么能换掉皇帝？_横屏.mp4"
+    ],
+    "script": "",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260916_plan_霍光废帝：一个臣子凭什么能换掉皇帝？_metadata.json",
+    "elapsed_seconds": 0.0,
+    "backfilled": true,
+    "plan_metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260916_plan_霍光废帝：一个臣子凭什么能换掉皇帝？_metadata.json",
+    "text_model": "",
+    "tts": ""
+  },
+  {
+    "run_id": "20260917172645",
+    "generated_at": "2026-09-17T17:26:45",
+    "topic": "霍光：一个臣子凭什么能换掉皇帝？",
+    "topic_type": "人物与抉择",
+    "series": "古代十大权臣",
+    "series_ep": 1,
+    "topic_desc": "一个臣子手里握着废立大权，他是如何一步步走到这个位置的？他要面对哪些阻力、算清哪些利弊，又将为此付出什么样的代价？",
+    "title": "换皇帝这份奏折：谁敢第一个签名？",
+    "period": "西汉昭帝-宣帝初期，公元前87年至前68年",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2097,
+    "speech_seconds": 446.2,
+    "speech_minutes": 7.44,
+    "speech_estimated": true,
+    "video_seconds": {
+      "landscape": 489.02,
+      "portrait": 489.02
+    },
+    "images": {
+      "total": 18,
+      "found": 0,
+      "fallback": 18
+    },
+    "verify": {},
+    "material": {
+      "topic": "霍光：一个臣子凭什么能换掉皇帝？",
+      "queries": [],
+      "items": 8,
+      "provider": "bing",
+      "cached": true
+    },
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_换皇帝这份奏折：谁敢第一个签名？_横屏.mp4",
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_换皇帝这份奏折：谁敢第一个签名？_竖屏.mp4"
+    ],
+    "script": "",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_plan_换皇帝这份奏折：谁敢第一个签名？_metadata.json",
+    "elapsed_seconds": 0.0,
+    "backfilled": true,
+    "plan_metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_plan_换皇帝这份奏折：谁敢第一个签名？_metadata.json",
+    "text_model": "",
+    "tts": ""
   }
 ]

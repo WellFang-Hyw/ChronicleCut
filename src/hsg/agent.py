@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 
 from . import clips as clips_mod
 from . import edl as edl_mod
+from . import history as history_mod
 from . import needs as needs_mod
 from . import pipeline, sources as sources_mod, storyio, video
 from . import tts as tts_mod
@@ -389,9 +391,66 @@ def _source_report(cfg: Config, story, edl: dict, index: dict) -> Path:
     return p
 
 
+def _record_finished(cfg: Config, story, *, total: float, outs: list[Path],
+                     covers: list[str], video_seconds: dict, started: float,
+                     plan_meta: Path) -> tuple[Path | None, Path | None]:
+    """出片后落两样留档产物：成片 metadata（带 tts_spec）+ 生成记录。
+
+    为什么非要有（护栏 25 的落点）：系列必须露在三处，其中一处是**生成记录** ——
+    系列进度（`run.bat series`）和「下一集是哪集」（`topics.next_episode`）都靠它算。
+    而阶段 2 是出成片的**唯一**路径，它在 2026-09-17 之前从不写记录：
+    后果是第 1 集出过两版成片、进度仍显示 0/10、「下一集」一直挑回第 1 集。
+    """
+    if not outs:
+        return None, None
+    out_dir = cfg.paths.get_path("output_dir")
+    stamp = datetime.now().strftime("%Y%m%d")
+    stem = f"{stamp}_{pipeline.safe_filename(story.title)}"
+    rows = pipeline.timeline_rows(story)
+    tts_sub = cfg.tts[str(cfg.tts.provider)]
+    llm_sub = cfg.llm[str(cfg.llm.provider)]
+    # 阶段 1 的那份稿子：脚本 md 就在 plan metadata 旁边，同名前缀
+    p_script = Path(str(plan_meta).replace("_metadata.json", "_脚本.md"))
+    meta_path = pipeline.write_metadata(story, cfg, out_dir / f"{stem}_metadata.json", rows, {
+        "topic": story.topic,
+        "total_seconds": round(total, 2),
+        "outputs": [str(p) for p in outs],
+        "covers": list(covers),
+        "video_seconds": video_seconds,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "elapsed_seconds": round(time.time() - started, 1),
+        # 音色/语速必须留档：音频缓存 key 含这两项，rerender 旧期时靠它才知道当初的设置
+        "tts_spec": {
+            "provider": str(cfg.tts.provider),
+            "voice_id": str(tts_sub.get("voice_id") or ""),
+            "speed": tts_sub.get("speed"),
+            "chars_per_second": float(cfg.story.get("chars_per_second") or 0),
+        },
+        "text_model": f"{cfg.llm.provider}/{llm_sub.get('model')}",
+        "stage": "stage2",
+        "plan_metadata": str(plan_meta),
+        "plan_only": False,
+    })
+    log.info("成片元数据：%s", meta_path)
+
+    if not bool(cfg.runtime.get("record_history", True)):
+        return meta_path, None
+    rec = history_mod.build_record(
+        story, cfg, total_seconds=round(total, 2), video_seconds=video_seconds,
+        outputs=[str(p) for p in outs],
+        script=str(p_script) if p_script.exists() else "",
+        metadata=str(meta_path), elapsed=time.time() - started,
+        extra={"stage": "stage2", "plan_metadata": str(plan_meta)},
+    )
+    hp, _md, updated = history_mod.upsert_record(cfg, rec)
+    log.info("生成记录：%s（%s）", hp, "已更新本期" if updated else "新增本期")
+    return meta_path, hp
+
+
 def stage2(cfg: Config, args) -> int:
     """阶段 2：补齐语音/配图 → AI 导演排镜头 → 合规校验 → 渲染 → 自检报告。"""
     ensure_dirs(cfg)
+    started = time.time()
     keys = ApiKeys.from_env()
     meta = pick_plan(cfg, getattr(args, "metadata", None))
     if meta is None or not Path(meta).exists():
@@ -448,12 +507,20 @@ def stage2(cfg: Config, args) -> int:
 
     # ---- 渲染
     outs: list[Path] = []
+    covers: list[str] = []
+    video_seconds: dict[str, float] = {}
     if do_video:
         for orient in orients:
             out, cover = pipeline.render_orientation(story, cfg, orient, edl=edl)
             outs.append(out)
             if cover:
+                covers.append(str(cover))
                 log.info("封面：%s", cover)
+            video_seconds[orient] = round(video.media_duration(out), 2)
+
+    # ---- 留档：成片 metadata + 生成记录（系列进度就靠这条记录算）
+    _record_finished(cfg, story, total=total, outs=outs, covers=covers,
+                     video_seconds=video_seconds, started=started, plan_meta=Path(meta))
 
     # ---- 自检 + 举证
     report_problems = _selfcheck(cfg, story, edl, outs) if outs else []

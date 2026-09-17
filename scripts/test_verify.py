@@ -2801,6 +2801,112 @@ def test_generate_only_images() -> None:
         check_true("重试后仍无图 → 交给调用方用渐变底图兜底", p is None, str(p))
 
 
+def test_stage2_record() -> None:
+    """阶段 2 出片后必须留档：成片 metadata + 生成记录（系列进度靠它算）。
+
+    为什么值得钉住：阶段 2 是出成片的**唯一**路径，而它在 2026-09-17 之前
+    从不写生成记录 —— 第 1 集出过两版成片，`run.bat series` 仍显示 0/10，
+    「下一集」一直挑回第 1 集（系列片会一直在原地打转）。
+    """
+    print("\n[阶段 2 留档 · 成片 metadata + 生成记录 + 系列进度]")
+    import json as _json
+    import tempfile
+    import time as _time
+
+    from hsg import agent as A, history as H, topics as T
+
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        out = base / "output"
+        out.mkdir(parents=True, exist_ok=True)
+        cfg["paths"]["data_dir"] = str(base / "data")
+        cfg["paths"]["output_dir"] = str(out)
+
+        s = Scene(index=1, text="曹操把天子迎到许都，诏书从这里发出去。",
+                  image_query="汉代诏书简牍", chapter_index=1)
+        s.duration = 8.5
+        story = Story(topic="曹操：挟天子到底能令多少诸侯？", title="挟天子这面旗：曹操能调动谁",
+                      series="古代十大权臣", series_ep=2, topic_type="政变与权力",
+                      period="东汉末年 196 年", period_start=196, period_end=220,
+                      chapters=[Chapter(index=1, heading="把天子握在手里", scenes=[s])])
+        plan = out / "20260918_plan_挟天子这面旗：曹操能调动谁_metadata.json"
+        plan.write_text(_json.dumps({"title": story.title, "series": story.series,
+                                     "series_ep": 2, "topic": story.topic,
+                                     "plan_only": True}, ensure_ascii=False),
+                        encoding="utf-8")
+        stem = A.pipeline.safe_filename(story.title)
+        mp4 = out / f"20260918_{stem}_横屏.mp4"
+        mp4.write_bytes(b"0" * 4096)
+
+        meta_path, rec_path = A._record_finished(
+            cfg, story, total=8.5, outs=[mp4], covers=["cover.jpg"],
+            video_seconds={"landscape": 9.1}, started=_time.time() - 3.0,
+            plan_meta=plan)
+        check_true("成片 metadata 落盘", meta_path is not None and meta_path.exists())
+        md = _json.loads(meta_path.read_text(encoding="utf-8")) if meta_path else {}
+        check("成片 metadata 记为出片（不是 plan_only）", md.get("plan_only"), False)
+        check("成片 metadata 带系列与集号",
+              (md.get("series"), md.get("series_ep")), ("古代十大权臣", 2))
+        check_true("成片 metadata 留了音色/语速（rerender 旧期要靠它）",
+                   bool((md.get("tts_spec") or {}).get("voice_id")))
+        check_true("成片 metadata 记了成片路径", mp4.name in " ".join(md.get("outputs") or []))
+        check("生成记录已写入", len(H.load(cfg)), 1)
+        got = H.load(cfg)[0]
+        check("记录里带系列与集号", (got.get("series"), got.get("series_ep")),
+              ("古代十大权臣", 2))
+        check_true("记录指向成片", any(mp4.name in str(x) for x in got.get("outputs") or []))
+        check_true("记录指向阶段 1 的稿子（不是空字符串）",
+                   "__no_such__" not in str(got.get("script")), str(got.get("script")))
+
+        # 重跑阶段 2（换开场白/补竖屏版）不该堆出同一期的多份副本
+        A._record_finished(cfg, story, total=8.5, outs=[mp4], covers=[],
+                           video_seconds={"portrait": 9.4}, started=_time.time() - 2.0,
+                           plan_meta=plan)
+        check("重跑同一期是更新而不是新增", len(H.load(cfg)), 1)
+        check_true("第一次出片的时间被保留",
+                   bool(H.load(cfg)[0].get("first_generated_at")))
+
+        # 系列进度：这就是这一整段代码存在的理由
+        pool = T.load_user_pool(T.user_pool_path(cfg))
+        txt = T.series_progress(pool, H.load(cfg), "古代十大权臣")
+        check_true("系列进度认到这一集（1/10）", "进度 1/10 集" in txt)
+        # 注意：✓/· 标记在标题的**下一行**（第一行放标题与类型，第二行放状态与描述）
+        rows_ = txt.splitlines()
+        idx = [i for i, ln in enumerate(rows_) if "曹操：挟天子" in ln]
+        ep2 = rows_[idx[0] + 1] if idx else ""
+        check_true("第 2 集那行标成已出", "✓ 已出" in ep2, ep2)
+        check_true("刚出的一集被判成「做过」",
+                   H.is_used(cfg, story.topic) or H.is_used(cfg, story.title))
+        nxt = T.next_episode(pool, "古代十大权臣", lambda x: H.is_used(cfg, x))
+        check_true("下一集往前走到第 1 集（本期做过，不会再被挑中）",
+                   nxt is not None and nxt.ep == 1, str(getattr(nxt, "ep", None)))
+
+    # backfill 的例外：plan 产物 + 成片确实躺在 output 里 → 认回这一期
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        out = base / "output"
+        out.mkdir(parents=True, exist_ok=True)
+        cfg2 = load_config()
+        cfg2["paths"]["data_dir"] = str(base / "data")
+        cfg2["paths"]["output_dir"] = str(out)
+        title = "某期已经出过片但没记进历史"
+        stem = A.pipeline.safe_filename(title)
+        (out / f"20260910_plan_{stem}_metadata.json").write_text(
+            _json.dumps({"title": title, "topic": "某题材", "plan_only": True,
+                         "chapters": [{"scenes": [{"text": "一二三四五六七八九十"}]}]},
+                        ensure_ascii=False), encoding="utf-8")
+        # ① 只有稿子、没有成片 → 不算一期
+        check("plan 产物没成片 → 不补录", H.backfill_from_metadata(cfg2), 0)
+        # ② 成片在（>1KB）→ 补录，并带上成片路径
+        (out / f"20260910_{stem}_横屏.mp4").write_bytes(b"0" * 4096)
+        check("成片确实存在 → 补录 1 条", H.backfill_from_metadata(cfg2), 1)
+        rec = H.load(cfg2)[0]
+        check_true("补录的记录指向成片",
+                   any(stem in str(x) for x in rec.get("outputs") or []))
+        check_true("补录的记录标了来源 plan metadata", bool(rec.get("plan_metadata")))
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2848,6 +2954,7 @@ def main() -> int:
     test_scene_kinds()
     test_scene_query_translation()
     test_generate_image_prompt()
+    test_stage2_record()
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     for f in FAIL:
