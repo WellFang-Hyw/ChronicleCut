@@ -633,7 +633,10 @@ def _render_scene_shots(s, plan: dict, story: Story, cfg: Config, size: tuple[in
     channel = get_channel(cfg)
     ch = (story.chapters[s.chapter_index - 1]
           if 0 < s.chapter_index <= len(story.chapters) else None)
-    kicker = f"{channel} · 第{ch.index}章 {ch.heading}" if ch else channel
+    # ⚠️ 这里原来是自己拼 f"{channel} · 第{ch.index}章 {ch.heading}"，**绕过了 kicker_text**
+    # → 系列名与期号永远上不了屏幕（2026-09-17 真跑抓出来的），而且把章节标题又写了一遍
+    #   （下面那行大字就是它）。渲染路径必须跟 kicker_text 共用一份口径。
+    kicker = kicker_text(channel, story, ch)
     dur = float(plan.get("dur") or 0)
     stem = f"seg_{s.index:03d}"
     scene_dir = seg_root / stem

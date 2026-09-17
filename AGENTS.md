@@ -96,7 +96,7 @@ run.bat                                   :: 随机选题，全流程，横竖�
 run.bat -t "主题" --minutes 9              :: 指定题材 / 目标时长
 run.bat plan -t "主题"                     :: 只写稿（不花 TTS 和渲染）
 run.bat probe-tts                         :: 实测字/秒（换音色/语速后必跑）
-run.bat test                              :: 零成本回归测试（540 项，不调 API）
+run.bat test                              :: 零成本回归测试（551 项，不调 API）
 run.bat comic --must-only                  :: 四格漫画素材（扩写 → image-01 出图 → 提示词清单）
 run.bat smoke-clips                       :: 零 API 冒烟：切片 + EDL 剪辑链路
 run.bat smoke                             :: 零 LLM 媒体链路冒烟
@@ -120,7 +120,7 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
 需求清单必须排在剪素材**之前**：剪素材是最慢的人工环节，先剪后配会剪一堆用不上的。
 架构与分工见 `docs\Agent应用架构.md`。
 
-**改完代码先跑 `run.bat test`**（540 项，零成本，覆盖的都是实跑撞过的坑）。
+**改完代码先跑 `run.bat test`**（551 项，零成本，覆盖的都是实跑撞过的坑）。
 
 ---
 
@@ -397,6 +397,18 @@ python scripts\check_layout.py frame.png  :: 程序化判定标题带/字幕带�
      四个时间点必须分别命中第 1/2/3/4 格。
    · 提示词里的负面清单**必须点名「对白气泡、拟声词」**：漫画题材最容易长出气泡和
      「咚/哗」，而我们要的是画面（旁白在字幕里，画面再冒字就重了）。
+
+43. **渲染路径的顶部小字必须走 `kicker_text()`，禁止自己拼**：
+   踩过两次同族的坑 —— ① `storyio.load_story` 没传 `series/series_ep`；
+   ② EDL 渲染路径自己拼 `f"{channel} · 第N章 {heading}"`。两次都是「测试钉了函数，
+   真实路径不调它」，结果系列名/期号在成片里**从来没出现过**。
+   现在有一条代码形状守卫兜底（`pipeline.py` 里再出现自己拼 kicker 的写法就 FAIL）。
+   加新的渲染路径时，先问一句：这行文案是**哪个函数**产出的？它有没有测试？
+
+44. **配图复用**（`images.reuse_existing`，默认 true）：重渲时 `scene_XXX.jpg` 已在、
+   且上次的提示词（`_sources.json` 的 attempts 里）跟这次**一模一样**才复用，
+   否则重出；`--force` 强制重出。为什么要它：一次重渲会把 18 张图重烧一遍
+   （约 10 分钟 + 额度），而重渲通常只是想换开场白/布局。**关了它 = 每渲一次烧一次钱**。
 
 ## 6. 已知的机制性局限（不要试图「优化」掉）
 

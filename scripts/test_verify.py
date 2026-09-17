@@ -2564,6 +2564,61 @@ def test_comic() -> None:
                        f"上沿 {g} 下沿 {m}")
 
 
+def test_image_reuse() -> None:
+    """配图复用：提示词没变就不重新生成（重渲不再白烧 18 张）。"""
+    print("\n[配图复用 images.generate_scene_image]")
+    import json
+    import tempfile
+    from pathlib import Path as _P
+
+    from hsg import images
+    from hsg.config import load_config
+
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        nd = _P(td)
+        (nd / "scene_001.jpg").write_bytes(b"\xff\xd8\xff" + b"0" * 6000)
+        from hsg.images import build_generate_prompt
+        good = build_generate_prompt("汉代未央宫前殿", cfg, "scene")
+        (nd / "_sources.json").write_text(json.dumps({
+            "entries": [{"scene": 1, "result": "scene_001.jpg",
+                         "attempts": [{"generator": "image-01", "prompt": good}]}]}),
+            encoding="utf-8")
+        check("能反查到上次用的提示词", images._recorded_prompt(nd, 1), good)
+        pth, _label, _src, rec = images.generate_scene_image(1, "汉代未央宫前殿", cfg, nd, "scene")
+        check_true("提示词没变 → 复用已有图（不调 API）",
+                   rec.get("reused") is True and pth and pth.name == "scene_001.jpg",
+                   f"reused={rec.get('reused')} err={rec.get('error')}")
+        # 提示词变了（换了画风）→ 不许复用，会走生成（这里没 key，退化为失败而不复用）
+        (nd / "_sources.json").write_text(json.dumps({
+            "entries": [{"scene": 1, "attempts": [{"prompt": "完全不同的提示词"}]}]}),
+            encoding="utf-8")
+        pth2, _l2, _s2, rec2 = images.generate_scene_image(1, "汉代未央宫前殿", cfg, nd, "scene")
+        check_true("提示词变了 → 不复用（走生成路径）", rec2.get("reused") is None,
+                   f"reused={rec2.get('reused')}")
+        # 关掉开关 → 不复用
+        cfg2 = load_config()
+        cfg2.images["reuse_existing"] = False
+        pth3, _l3, _s3, rec3 = images.generate_scene_image(1, "汉代未央宫前殿", cfg2, nd, "scene")
+        check_true("reuse_existing=false → 不复用", rec3.get("reused") is None,
+                   f"reused={rec3.get('reused')}")
+
+
+def test_render_kicker_shape() -> None:
+    """渲染路径必须跟 kicker_text 共用口径（别自己拼 kicker）。
+
+    踩过：EDL 渲染路径自己拼 f"{channel} · 第N章 {heading}"，绕过了 kicker_text，
+    于是系列名与期号永远上不了屏幕，而测试只钉 kicker_text，验不到真实路径。
+    """
+    print("\n[渲染路径 kicker 口径]")
+    import re as _re
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "src" / "hsg" / "pipeline.py").read_text(
+        encoding="utf-8")
+    bad = _re.findall(r'kicker = f"\{[^\n]*第\{', src)
+    check_true("渲染路径没有自己拼 kicker（必须走 kicker_text）", not bad, f"发现 {len(bad)} 处")
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2592,6 +2647,8 @@ def main() -> int:
     test_cover()
     test_intro_and_cover_style()
     test_comic()
+    test_image_reuse()
+    test_render_kicker_shape()
     test_clip_index()
     test_clip_normalize()
     test_crop_subtitle_band()

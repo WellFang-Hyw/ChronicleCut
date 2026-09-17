@@ -268,6 +268,12 @@ images:
   #   判错不会没图，最坏是这条分镜用错了另一套后缀。关掉则全部按器物向处理。
   classify_scene_kinds: true
   # AIGC 水印：MiniMax 可在图上加 AI 生成标识。默认关（自己的片子不需要）。
+  # ---- 复用已有配图（2026-09-17 加）----
+  # true：data/images/scene_XXX.jpg 已存在、且**提示词跟上次一模一样**时直接复用，
+  #       不再调 image-01 重新生成。背景：每重渲一次就把 18 张图重烧一遍
+  #       （约 10 分钟 + 相应额度），而重渲通常只是想换个开场白/布局。
+  #       提示词变了（换画风/换类型后缀）会自动重出；想强制重出用 --force。
+  reuse_existing: true
   generate_aigc_watermark: false
   generate_timeout: 300
   # ---- 兜底检索词 ----
