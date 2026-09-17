@@ -481,5 +481,45 @@
     "plan_metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_plan_换皇帝这份奏折：谁敢第一个签名？_metadata.json",
     "text_model": "",
     "tts": ""
+  },
+  {
+    "run_id": "20260917-190743",
+    "generated_at": "2026-09-17T19:07:43",
+    "topic": "曹操：挟天子到底能令多少诸侯？",
+    "title": "一道圣旨，能调得动几路兵马？",
+    "topic_type": "",
+    "topic_desc": "",
+    "series": "古代十大权臣",
+    "series_ep": 2,
+    "angle_question": "曹操手里那张皇帝牌，实际能号令到哪些人、调不动哪些人？诏书的名义边界到底在哪？",
+    "angle_mode": "small",
+    "period": "东汉末年，公元196年前后至208年",
+    "chapters": 6,
+    "scenes": 18,
+    "chars": 2389,
+    "speech_seconds": 512.1,
+    "speech_minutes": 8.54,
+    "video_seconds": {
+      "portrait": 573.85,
+      "landscape": 573.85
+    },
+    "images": {
+      "total": 18,
+      "found": 18,
+      "fallback": 0
+    },
+    "verify": {},
+    "material": {},
+    "outputs": [
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_一道圣旨，能调得动几路兵马？_竖屏.mp4",
+      "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_一道圣旨，能调得动几路兵马？_横屏.mp4"
+    ],
+    "script": "data\\output\\20260917_plan_一道圣旨，能调得动几路兵马？_脚本.md",
+    "metadata": "D:\\Resources\\code\\historical_story_gen\\data\\output\\20260917_一道圣旨，能调得动几路兵马？_metadata.json",
+    "elapsed_seconds": 1285.2,
+    "text_model": "minimax/MiniMax-M2.7-highspeed",
+    "tts": "minimax/audiobook_male_1",
+    "stage": "stage2",
+    "plan_metadata": "data\\output\\20260917_plan_一道圣旨，能调得动几路兵马？_metadata.json"
   }
 ]
