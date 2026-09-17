@@ -2340,6 +2340,32 @@ def test_intro_and_cover_style() -> None:
                                                   cfg, "历史小故事")
                and "本期为您讲述" in pipeline.intro_speech(_st(series="", series_ep=0),
                                                            cfg, "历史小故事"))
+    # ★ 真实路径：stage 2 是用 storyio 从 metadata 重建 story 的
+    #  （上一版漏传 series/series_ep，导致开场白和画面系列标签在成片里都是缺的）
+    import json as _json
+    with tempfile.TemporaryDirectory() as _td:
+        mp = _P(_td) / "20260916_plan_x_metadata.json"
+        mp.write_text(_json.dumps({
+            "topic": "霍光：一个臣子凭什么能换掉皇帝？", "title": "霍光废帝：一个臣子凭什么能换掉皇帝？",
+            "hook": "公元前74年夏天。", "series": "古代十大权臣", "series_ep": 1,
+            "period": "西汉", "period_start": -100, "period_end": 0, "tts_spec": {},
+            "chapters": [{"index": 1, "heading": "遗诏辅政", "summary": "s",
+                          "scenes": [{"index": 1, "text": "旁白", "caption": "图注"}]}]}),
+            encoding="utf-8")
+        import logging as _logging
+        from hsg import storyio
+        st_real, _raw = storyio.load_story(mp, cfg, _P(_td) / "audio",
+                                           _logging.getLogger("test.storyio"))
+        check("metadata → story 带上系列名（stage 2 真实路径）", st_real.series, "古代十大权臣")
+        check("metadata → story 带上集号", st_real.series_ep, 1)
+        t_real = pipeline.intro_speech(st_real, cfg, "历史小故事")
+        check_true("真实路径的开场白也报系列与期号",
+                   "古代十大权臣" in t_real and "第一期" in t_real, f"→ {t_real[:52]}")
+        check_true("真实路径的画面系列标签也带上",
+                   "古代十大权臣" in pipeline.kicker_text("历史小故事", st_real,
+                                                          st_real.chapters[0]),
+                   pipeline.kicker_text("历史小故事", st_real, st_real.chapters[0]))
+
     t2 = pipeline.intro_speech(_st(series_ep=2, title="曹操：他凭什么挟天子？"), cfg, "历史小故事")
     check_true("第 2 期不再说「从这一期开始」（改说「接着讲」）",
                "接着讲" in t2 and "从这一期开始" not in t2, f"→ {t2[:46]}")
