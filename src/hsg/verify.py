@@ -153,6 +153,27 @@ _AUDIT_SCHEMA = """{
 }"""
 
 
+# 审校器自己判了"没问题"却仍把条目返回的标记。实测它至少用过两种说法：
+#   「…此条不报。」「此条无误。」—— 调用方原来一律写进「待人工核对」清单，
+#   于是某期 12 条里 6 条是这种噪声、另一轮 21 条里 18 条是，清单看着唬人。
+# 三轮实测出现过三种说法：此条不报 / 此条无误 / 无需修改 —— 还会再变，所以宁宽勿窄。
+_NOISE_MARKERS = ("此条不报", "此条无误", "此条无须报", "不必报", "此表述正确", "无误，此条",
+                  "无需修改", "不需修改", "无须修改", "不需要修改")
+
+
+def triage(items: list[dict]) -> list[dict]:
+    """把审校结果里"它自己都说没问题"的条目丢掉，只留真要人看的。"""
+    out: list[dict] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        detail = str(it.get("detail") or "")
+        if any(m in detail for m in _NOISE_MARKERS):
+            continue
+        out.append(it)
+    return out
+
+
 def llm_audit(story: Story, cfg: Config, llm: LLM) -> list[dict]:
     """LLM 史实审校。返回 issue 列表（可能为空）。
 

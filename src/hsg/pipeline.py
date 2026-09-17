@@ -434,7 +434,8 @@ def run(
         stats["recheck_warn"] = len(recheck["warns"])
         if recheck["fails"]:
             verify.report(recheck["fails"])
-            story.notes = [f"分镜 {i['scene'] or '-'}：{i['detail']}" for i in recheck["fails"]]
+            story.notes = [f"分镜 {i['scene'] or '-'}：{i['detail']}"
+                           for i in verify.triage(recheck["fails"])]
             log.warning("复检仍有 %d 条必须处理的问题（已写进稿件的「待人工核对」清单）",
                         len(recheck["fails"]))
             if bool(cfg.verify.get("block_on_fail", False)):

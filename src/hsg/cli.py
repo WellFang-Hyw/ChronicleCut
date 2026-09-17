@@ -314,7 +314,9 @@ def cmd_plan(cfg, args) -> int:
         recheck = final_check(story, cfg, llm)
         if recheck["fails"]:
             report(recheck["fails"])
-            story.notes = [f"分镜 {i['scene'] or '-'}：{i['detail']}" for i in recheck["fails"]]
+            from . import verify as verify_mod
+            story.notes = [f"分镜 {i['scene'] or '-'}：{i['detail']}"
+                           for i in verify_mod.triage(recheck["fails"])]
             log.warning("复检仍有 %d 条必须处理的问题（已写进稿件的「待人工核对」清单）",
                         len(recheck["fails"]))
         else:

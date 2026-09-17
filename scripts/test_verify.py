@@ -2712,6 +2712,24 @@ def test_bright_amber_cover_and_no_clips() -> None:
     check("没出过漫画图的槽位不会写成 comic（免得渲染层空等）", k_c.get("comic", 0), 0)
 
 
+def test_audit_triage() -> None:
+    """审校结果过滤：它自己判了「不报/无误」的条目不许进「待人工核对」清单。"""
+    print("\n[审校噪声过滤 verify.triage]")
+    from hsg import verify
+    items = [
+        {"scene": 1, "kind": "fail", "detail": "真问题：年份对不上｜建议：改成前66年"},
+        {"scene": 2, "kind": "fail", "detail": "……此处表述正确。此条不报。｜建议："},
+        {"scene": 3, "kind": "fail", "detail": "……此条无误。｜建议："},
+        {"scene": 4, "kind": "fail", "detail": "……是对的，不必报。｜建议："},
+        {"scene": 6, "kind": "fail", "detail": "……正确。｜建议：无需修改。"},
+        {"scene": 5, "kind": "fail", "detail": "另一处真问题｜建议：换个说法"},
+    ]
+    out = verify.triage(items)
+    check("只留真报项", [i["scene"] for i in out], [1, 5])
+    check("全是噪声时返回空（三种标记都要认）", verify.triage(items[1:5]), [])
+    check("空输入不炸", verify.triage(None), [])
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2743,6 +2761,7 @@ def main() -> int:
     test_image_reuse()
     test_render_kicker_shape()
     test_bright_amber_cover_and_no_clips()
+    test_audit_triage()
     test_clip_index()
     test_clip_normalize()
     test_crop_subtitle_band()
