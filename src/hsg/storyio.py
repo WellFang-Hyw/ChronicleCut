@@ -70,7 +70,11 @@ def load_story(meta_path: Path, cfg: Config, audio_dir: Path, log_) -> tuple[Sto
         period_end=int(data.get("period_end") or 0),
         chapters=chapters,
         material=str(data.get("material") or ""),
-        notes=list(data.get("notes") or []),
+        # metadata 落盘的字段名是 unresolved（见 pipeline.write_metadata），读回来必须认它。
+        # ⚠️ 漏过的后果：`load_story` 读不到 → 再 `write_metadata` 就把整份
+        # 「待人工核对」清单写成空（阶段 2 出的成片 metadata 也跟着空，
+        # 发布前最该看的那份清单反而没了）。2026-09-17 第 2 集实测踩到。
+        notes=list(data.get("notes") or data.get("unresolved") or []),
     )
     missing = [s.index for s in story.all_scenes if s.audio_path is None]
     if missing:

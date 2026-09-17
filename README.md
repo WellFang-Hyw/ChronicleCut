@@ -695,6 +695,19 @@ python scripts\check_layout.py frame.png
 > 要编 1080p；实测本机 14GB 被吃到 92% 时会挂）。**重跑一次即可**，别去改断言 ——
 > 判据是「隔离跑同一条也失败 + 代码路径当天没改」就是环境。要稳就先关掉几个 VS Code/浏览器。
 
+### 2026-09-17 · 修「读到 story 再写出去会洗掉待人工核对清单」（第 2 集写稿时踩到）
+
+做第 2 集时发现：改完稿重新生成脚本文档，`## ⚠️ 待人工核对` 那一节变**空**了。
+
+- **根因**：字段名不对称。`pipeline.write_metadata` 把 `story.notes` 写成 metadata 的
+  **`unresolved`**，而 `storyio.load_story` 只读 **`notes`**。于是「load_story → 改 →
+  再 write_metadata」这一步会把整份清单洗掉。影响不止文档：阶段 2 出新版 metadata 时
+  走的正是这条路径（`_prepare_story` → `_record_finished`），**成片 metadata 里的
+  待人工核对清单也会跟着空** —— 发布前最该看的那份反而没了。
+- **改动**：`storyio.load_story` 读 `notes` 时回退到 `unresolved`；新增回归测试
+  `test_script_notes_roundtrip`（落盘字段名 → 读回 notes → 再写不丢，往返稳定）。
+- **验证**：脚本 md 重新生成后待人工核对清单 **38 条**回来了；回归 **598 项全过**。
+
 ### 2026-09-17 · 修「阶段 2 出片不写生成记录」：系列进度从 0/10 变回 1/10
 
 开工做第 2 集前的 30 秒自查（`run.bat series`）暴露出一个真问题：第 1 集明明出过两版成片，

@@ -2801,6 +2801,39 @@ def test_generate_only_images() -> None:
         check_true("重试后仍无图 → 交给调用方用渐变底图兜底", p is None, str(p))
 
 
+def test_script_notes_roundtrip() -> None:
+    """「待人工核对」清单不能丢：metadata 落盘的字段叫 unresolved，读回来必须是 notes。
+
+    踩过的坑（2026-09-17，第 2 集）：write_metadata 把 story.notes 写进 metadata 的
+    `unresolved`，而 storyio.load_story 只读 `notes` —— 于是「读进来再写出去」这一步
+    会把整份清单洗成空（阶段 2 出的成片 metadata 也跟着空，发布前最该看的那份反而没了）。
+    """
+    print("\n[脚本留档 · unresolved ↔ notes 往返]")
+    import json as _json
+    import logging
+    import tempfile
+
+    from hsg import pipeline, storyio
+
+    cfg = load_config()
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "m.json"
+        s = Scene(index=1, text="测试口播一句。", image_query="检索词", chapter_index=1)
+        s.duration = 5.0
+        story = Story(topic="题材", title="标题",
+                      chapters=[Chapter(index=1, heading="一章", scenes=[s])])
+        story.notes = ["分镜 1：某某说法查无出处", "（人工复核）本轮改了 3 处"]
+        pipeline.write_metadata(story, cfg, p, [], {})
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        check("落盘字段名是 unresolved", len(data.get("unresolved") or []), 2)
+        st2, _ = storyio.load_story(p, cfg, Path(td) / "audio", logging.getLogger("t"))
+        check("读回来落到 story.notes", len(st2.notes), 2)
+        p2 = Path(td) / "m2.json"
+        pipeline.write_metadata(st2, cfg, p2, [], {})
+        check("再写一次不丢（往返稳定）",
+              len(_json.loads(p2.read_text(encoding="utf-8")).get("unresolved") or []), 2)
+
+
 def test_stage2_record() -> None:
     """阶段 2 出片后必须留档：成片 metadata + 生成记录（系列进度靠它算）。
 
@@ -2955,6 +2988,7 @@ def main() -> int:
     test_scene_query_translation()
     test_generate_image_prompt()
     test_stage2_record()
+    test_script_notes_roundtrip()
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     for f in FAIL:
