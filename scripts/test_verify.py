@@ -2405,6 +2405,21 @@ def test_intro_and_cover_style() -> None:
             b2 = sum(p[2] for p in d2) / len(d2)
         check_true("关掉橙色（tint_alpha=0 + 冷色底）→ 不再偏暖", r2 <= b2 + 10,
                    f"→ R{r2:.0f} B{b2:.0f}")
+        # 真实封面底下是**配图**（常偏冷），不是渐变 —— 实测渐变测得出橙色、真实图差一口气，
+        # 所以再拿一张冷色合成图走一遍，判据才跟生产对齐。
+        cold = nd / "cold.jpg"
+        Image.new("RGB", (900, 675), (188, 205, 228)).save(cold)
+        cov3 = media.build_cover(nd / "c3.jpg", (1920, 1080), cfg, title=title,
+                                 kicker="历史小故事 · 古代十大权臣 第1期",
+                                 subtitle="公元前1世纪中叶", foot="一盏茶的时间，听一段旧事",
+                                 image_path=cold)
+        d3 = list(Image.open(cov3).convert("RGB").resize((60, 34)).get_flattened_data())
+        r3 = sum(p[0] for p in d3) / len(d3)
+        g3 = sum(p[1] for p in d3) / len(d3)
+        b3 = sum(p[2] for p in d3) / len(d3)
+        # 判据定在 30：冷色底实测 35、真实那一期封面 42 —— 基线是「冷底图也能压成橙调」
+        check_true(f"冷色配图当底也照样偏橙（R{r3:.0f} G{g3:.0f} B{b3:.0f}）",
+                   r3 > g3 > b3 and r3 - b3 >= 30, f"→ R-B={r3 - b3:.0f}")
 
 
 def test_comic() -> None:

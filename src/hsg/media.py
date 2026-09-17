@@ -493,7 +493,7 @@ def build_cover(
     # ---------------- 背景（橙色风格：底图不管什么颜色，一律往橙色拉一遍）
     base_rgb = hex_rgb(cfg.video.get("cover_base", "#5A2A0C"), (90, 42, 12))
     tint_rgb = hex_rgb(cfg.video.get("cover_tint", "#C2571A"), (194, 87, 26))
-    tint_alpha = float(cfg.video.get("cover_tint_alpha", 0.54))
+    tint_alpha = float(cfg.video.get("cover_tint_alpha", 0.62))
     warm_dark = hex_rgb(cfg.video.get("cover_scrim", "#1A0A02"), (26, 10, 2))
     bg = None
     if image_path and Path(image_path).exists():
