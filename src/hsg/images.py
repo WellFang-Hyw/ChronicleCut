@@ -989,9 +989,13 @@ def generate_scene_image(scene_index: int, prompt: str, cfg: Config,
             log.info("分镜 %d 配图：复用已有 %s（提示词没变，不重新生成/不花钱）",
                      scene_index, final.name)
             return (final, f"AI 生成（{im.get('generate_model') or 'image-01'}）", "minimax-gen",
+                    # ⚠️ "picked" 不能少：pipeline 是靠 `pick.get("license")` 取版权标注的
+                    # （`pick` = attempts 里带 picked 的那条），漏了它复用图的版权就成空白 ——
+                    # 实测后果：17 张复用图被判"版权状态不明"，素材出处清单也跟着空。
                     {"generator": str(im.get("generate_model") or "image-01"), "prompt": full,
                      "aspect": str(im.get("generate_aspect") or "3:4"), "kind": kind,
                      "reused": True, "file": final.name,
+                     "picked": f"reuse:{final.name}",
                      "license": "AI 生成（无第三方版权）"})
     payload = {
         "model": str(im.get("generate_model") or "image-01"),

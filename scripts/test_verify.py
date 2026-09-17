@@ -2594,6 +2594,11 @@ def test_image_reuse() -> None:
         check_true("提示词没变 → 复用已有图（不调 API）",
                    rec.get("reused") is True and pth and pth.name == "scene_001.jpg",
                    f"reused={rec.get('reused')} err={rec.get('error')}")
+        # 复用的记录必须带版权标注，且要能被 pipeline 那套取值口径拿到
+        # （pipeline 取的是 attempts 里带 "picked" 的那条的 license）
+        check_true("复用记录带 picked（pipeline 靠它取版权）", bool(rec.get("picked")),
+                   str(rec.get("picked")))
+        check("复用记录的版权标注不是空的", bool(rec.get("license")), True)
         # 提示词变了（换了画风）→ 不许复用，会走生成（这里没 key，退化为失败而不复用）
         (nd / "_sources.json").write_text(json.dumps({
             "entries": [{"scene": 1, "attempts": [{"prompt": "完全不同的提示词"}]}]}),
