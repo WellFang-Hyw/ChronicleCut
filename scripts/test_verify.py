@@ -274,7 +274,10 @@ def test_history_roundtrip() -> None:
         check("配图统计正确", loaded[0]["images"], {"total": 1, "found": 1, "fallback": 0})
         check("成片时长被记录", loaded[0]["video_seconds"]["portrait"], 24.0)
         check("配音分钟数被记录", loaded[0]["speech_minutes"], 0.33)
-        check_true("模型分工被记录", "deepseek/" in loaded[0]["text_model"])
+        # 写稿模型可能是配置里的任意一个（2026-09-17 起 user 可切 MiniMax），
+        # 所以跟配置比，别写死 —— 写死的用例一改配置就挂，且看不出原因。
+        check_true("模型分工被记录", f"{cfg.llm.provider}/" in loaded[0]["text_model"],
+                   str(loaded[0]["text_model"]))
         md = H.md_path(cfg)
         check_true("人看的 markdown 版也生成了",
                    md.exists() and "测试标题" in md.read_text(encoding="utf-8"))
@@ -2730,6 +2733,74 @@ def test_audit_triage() -> None:
     check("空输入不炸", verify.triage(None), [])
 
 
+def test_text_provider_switch() -> None:
+    """写稿/校验模型分离（2026-09-17 用户指定）：MiniMax 写稿要显式确认，校验固定 DeepSeek。"""
+    print("\n[写稿/校验 provider 分离 config.assert_text_provider / verify_provider]")
+    from hsg import config as config_mod
+    from hsg.config import load_config
+    from hsg.llm import LLM
+
+    cfg = load_config()
+    cfg.llm["provider"] = "deepseek"
+    cfg.llm["allow_nondeepseek_text"] = False
+    check("默认写稿走 deepseek", config_mod.assert_text_provider(cfg), "deepseek")
+    cfg.verify["provider"] = ""
+    check("校验不填时默认 deepseek", config_mod.verify_provider(cfg), "deepseek")
+
+    cfg.llm["provider"] = "minimax"
+    try:
+        config_mod.assert_text_provider(cfg)
+        blocked = False
+    except RuntimeError as exc:
+        blocked = "allow_nondeepseek_text" in str(exc)
+    check_true("切 MiniMax 但不显式确认 → 拦下并告诉怎么开", blocked, "没拦住")
+    cfg.llm["allow_nondeepseek_text"] = True
+    check("显式确认后放行", config_mod.assert_text_provider(cfg), "minimax")
+    check("写稿切了 MiniMax，校验仍是 deepseek（两模型互挑错）",
+          config_mod.verify_provider(cfg), "deepseek")
+
+    cfg.llm["provider"] = "aliyun"
+    try:
+        config_mod.assert_text_provider(cfg)
+        bad = False
+    except RuntimeError:
+        bad = True
+    check_true("白名单外的 provider 直接拒绝", bad, "没拒绝")
+
+    cfg.llm["provider"] = "minimax"
+    check("LLM(provider=...) 能覆盖写稿模型",
+          LLM(cfg, provider="deepseek").provider, "deepseek")
+    check("LLM() 默认跟随配置", LLM(cfg).provider, "minimax")
+
+
+def test_generate_only_images() -> None:
+    """generate_only：只用生成图，不退回图库（用户 2026-09-17 要求删掉网上找图）。"""
+    print("\n[只用生成图 images.fetch_for_scene generate_only]")
+    import tempfile
+    from pathlib import Path as _P
+
+    from hsg import images
+    from hsg.config import load_config
+
+    cfg = load_config()
+    check("配置里已关掉所有图库源", list(cfg.images.get("providers") or []), [])
+    check_true("generate_only 开着", bool(cfg.images.get("generate_only")), "关着")
+    with tempfile.TemporaryDirectory() as td:
+        nd = _P(td)
+        # generate_only 且取不到 key → 生成失败 → 应当**直接返回无图**，不许去找图库
+        cfg2 = load_config()
+        cfg2.images["generate_only"] = True
+        cfg2.images["generate_retries"] = 2
+        cfg2.images["generate"] = False   # 模拟"生成失败"，避免误打真实 API（会花钱、且慢）
+        p, label, src, attempts = images.fetch_for_scene(
+            1, ["某个很具体的检索词"], cfg2, nd, [], queries_en=["very specific query"],
+            kind=images.KIND_SCENE)
+        check_true("生成失败时不退回图库（没有库检索记录）",
+                   all(str(a.get("round", "")).startswith("generate") for a in attempts),
+                   str([a.get("round") for a in attempts])[:60])
+        check_true("重试后仍无图 → 交给调用方用渐变底图兜底", p is None, str(p))
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2762,6 +2833,8 @@ def main() -> int:
     test_render_kicker_shape()
     test_bright_amber_cover_and_no_clips()
     test_audit_triage()
+    test_text_provider_switch()
+    test_generate_only_images()
     test_clip_index()
     test_clip_normalize()
     test_crop_subtitle_band()

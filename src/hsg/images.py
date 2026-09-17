@@ -1080,6 +1080,22 @@ def fetch_for_scene(
     # ---- 生成优先（若开启）：生成图不受图库索引限制，也没有第三方版权。
     # 失败（额度/限流/接口异常）就静默退回下面的图库检索，不会因此没图。
     all_attempts: list[dict] = []
+    # ---- 只用生成图（2026-09-17 用户要求：删掉「从网上找图」这一步）
+    # generate_only=true 时不再走图库检索，生成失败就重试；重试全败才退回渐变底图。
+    if bool(im.get("generate_only", False)):
+        tries = max(1, int(im.get("generate_retries", 3)))
+        for k in range(tries):
+            p, label, src, rec = generate_scene_image(scene_index, qs[0], cfg, cache_dir, kind)
+            if rec:
+                all_attempts.append({**rec, "round": f"generate#{k + 1}"})
+            if p:
+                return p, label, src, all_attempts
+            if k < tries - 1:
+                log.warning("分镜 %d 生成配图失败，重试（%d/%d）", scene_index, k + 2, tries)
+                time.sleep(2.0 * (k + 1))
+        log.warning("分镜 %d 生成图 %d 次全失败 → 退回渐变底图（generate_only 下没有图库兜底）",
+                    scene_index, tries)
+        return None, "", "", all_attempts
     if bool(im.get("generate", False)):
         p, label, src, rec = generate_scene_image(scene_index, qs[0], cfg, cache_dir, kind)
         if rec:

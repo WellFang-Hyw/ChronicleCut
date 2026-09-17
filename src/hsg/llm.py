@@ -53,10 +53,12 @@ def extract_json(text: str) -> Any:
 
 
 class LLM:
-    def __init__(self, cfg: Config, keys: ApiKeys | None = None):
+    def __init__(self, cfg: Config, keys: ApiKeys | None = None, provider: str | None = None):
+        """`provider` 覆盖 cfg.llm.provider —— 校验那条线要用它强制走 DeepSeek，
+        不受写稿模型（可能是 MiniMax）影响。"""
         self.cfg = cfg
         self.keys = keys or ApiKeys.from_env()
-        self.provider = str(cfg.llm.provider)
+        self.provider = str(provider or cfg.llm.provider)
         if self.provider not in ("minimax", "deepseek", "aliyun"):
             raise ValueError(f"未知的 llm.provider: {self.provider}")
         sub = cfg.llm[self.provider]

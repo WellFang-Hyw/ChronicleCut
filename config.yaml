@@ -85,7 +85,13 @@ material:
 #    把下面 provider 改成别的，启动时直接报错，不会悄悄换掉文本模型。
 #    CLI 的 --provider 也只接受 deepseek。
 llm:
-  provider: "deepseek"          # 已锁定，改这里无效
+  # 2026-09-17 用户要求：写稿改用 MiniMax，校验（verify.provider）用 DeepSeek。
+  # 「写稿与校验用不同模型」是刻意的 —— 同一模型常常看不见自己的错。
+  # 注意：default 仍是 deepseek；切到别的 provider 必须同时打开下面的 allow_nondeepseek_text，
+  # 否则 config.assert_text_provider() 会在启动时报错拦下（这道闸门是 2026-09-15 定的，
+  # 2026-09-17 从「硬锁死」改成「显式开关＋醒目横幅」）。
+  provider: "minimax"
+  allow_nondeepseek_text: true
   max_tokens: 8192
   max_tokens_cap: 32768
   timeout: 180
@@ -107,6 +113,8 @@ llm:
 
 # ---------- 4. 史实校验 ----------
 verify:
+  # 校验用哪个模型：默认 deepseek（与写稿模型独立 —— 写用 MiniMax 时，校验仍走 DeepSeek）
+  provider: "deepseek"
   # 程序化：年份是否落在故事所处的年代区间内（超出的会被点名）
   year_range_check: true
   # 程序化：同一个人名在全文里的写法是否一致
@@ -203,7 +211,12 @@ images:
   #   bing       版权未明，仅 mixed 模式参与
   # 想换/加源：改这一行即可；配了 key 之后把名字加进来就会生效。
   # 建议先跑 `run.bat probe-images --download` 量一遍真实下载速度再决定。
-  providers: ["cleveland", "pexels", "unsplash"]
+  # ★ 2026-09-17 用户要求：删掉「从网上找图」这一步 —— 所有画面都用分镜生成图。
+  #   留空 = 不启用任何图库源；配合下面的 generate_only，生成失败只会重试，不会退回图库。
+  providers: []
+  # true：只用生成图。生成失败重试 generate_retries 次；全败才退回渐变底图（会在日志里显著告警）。
+  generate_only: true
+  generate_retries: 3
   # 每个分镜最多试几个检索词（LLM 会给 1-3 个）
   max_queries_per_scene: 3
   # 每路检索取多少候选
@@ -551,7 +564,7 @@ needs:
 #   直接丢给模型会得到一张"概括图"；扩写成四拍（起/承/转/合）+ 一句统一设定之后，
 #   模型才有足够信息画出"同一场戏的四个瞬间"。
 comic:
-  enabled: true             # ★ true = 有漫画图的槽位用四格漫画（2026-09-17 定）；没出图的槽位仍用生成配图
+  enabled: false            # 2026-09-17 第二轮：本轮"所有背景都用分镜生成图"，先不用漫画（改 true 可切回）
   model: "image-01"
   layout: "2x2"             # 2x2 | 1x4 | 4x1（一张图里的格子排布）
   aspect: "1:1"             # 出图纸张画幅（2x2 时每格是正方形）

@@ -165,7 +165,11 @@ def ensure_dirs(cfg: Config) -> None:
 # ---------------------------------------------------------------- 模型锁定
 # 文本模型锁定为 DeepSeek：MiniMax 只允许用于 TTS。
 # 想换文本模型 → 改这里的常量 + config.yaml 的 llm.provider，两处必须一致。
-TEXT_PROVIDER_LOCK = "deepseek"
+# 文本模型：默认 deepseek；允许的 provider 白名单。
+# 2026-09-17 用户要求「写稿用 MiniMax、校验用 DeepSeek」——锁从"只许 deepseek"
+# 改成"显式开关 + 醒目横幅"：默认不变，要用别的必须同时打开 llm.allow_nondeepseek_text。
+TEXT_PROVIDER_DEFAULT = "deepseek"
+TEXT_PROVIDERS_ALLOWED = ("deepseek", "minimax")
 
 DEFAULT_CHANNEL_NAME = "历史小故事"
 
@@ -181,15 +185,28 @@ def assert_text_provider(cfg: Config) -> str:
     也会在这里被拦下，而不是悄悄换掉文本模型。
     """
     provider = str(cfg.llm.provider)
-    if provider != TEXT_PROVIDER_LOCK:
+    if provider == TEXT_PROVIDER_DEFAULT:
+        return provider
+    if provider not in TEXT_PROVIDERS_ALLOWED:
         raise RuntimeError(
-            f"文本模型已锁定为 {TEXT_PROVIDER_LOCK!r}，当前配置是 {provider!r}。\n"
-            f"  · 本项目规定：文本内容（选题/写稿/史实审校）只用 DeepSeek，\n"
-            f"    MiniMax 只用于语音合成（tts.provider，不受此限制）。\n"
-            f"  · 确实要换：请修改 src/hsg/config.py 里的 TEXT_PROVIDER_LOCK，\n"
-            f"    并同步修改 config.yaml 的 llm.provider，两处必须一致。"
+            f"文本模型只支持 {TEXT_PROVIDERS_ALLOWED}，当前配置是 {provider!r}。")
+    if not bool(cfg.llm.get("allow_nondeepseek_text", False)):
+        raise RuntimeError(
+            f"文本模型当前是 {provider!r}，不是默认的 {TEXT_PROVIDER_DEFAULT!r}。\n"
+            f"  · 默认只用 DeepSeek 写稿（2026-09-15 定的规矩），要用别的必须显式确认：\n"
+            f"    在 config.yaml 的 llm 段写 allow_nondeepseek_text: true\n"
+            f"  · 校验模型是另一条线（verify.provider），默认仍是 DeepSeek ——\n"
+            f"    写稿与校验用不同模型，才能互相挑错。"
         )
     return provider
+
+
+def verify_provider(cfg: Config) -> str:
+    """校验（史实审校/复检）用哪个模型：默认 deepseek，与写稿模型相互独立。"""
+    p = str(cfg.verify.get("provider") or TEXT_PROVIDER_DEFAULT)
+    if p not in TEXT_PROVIDERS_ALLOWED:
+        raise RuntimeError(f"verify.provider 只支持 {TEXT_PROVIDERS_ALLOWED}，收到 {p!r}")
+    return p
 
 
 def provider_banner(cfg: Config) -> str:
@@ -197,6 +214,7 @@ def provider_banner(cfg: Config) -> str:
     llm_sub = cfg.llm[str(cfg.llm.provider)]
     tts_sub = cfg.tts[str(cfg.tts.provider)]
     return (
-        f"文本模型 (选题/写稿/史实审校) : {cfg.llm.provider} / {llm_sub.get('model')}\n"
+        f"写稿模型 (选题/大纲/写稿)      : {cfg.llm.provider} / {llm_sub.get('model')}\n"
+        f"校验模型 (史实审校/复检)        : {verify_provider(cfg)}\n"
         f"语音合成 (TTS)                : {cfg.tts.provider} / {tts_sub.get('voice_id')}"
     )

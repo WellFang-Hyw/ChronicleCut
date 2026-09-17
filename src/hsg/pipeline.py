@@ -23,7 +23,7 @@ from . import history as history_mod
 from . import topics
 from . import images as images_mod
 from . import media, shotvideo, tts as tts_mod, verify, video
-from .config import ApiKeys, Config, ensure_dirs, get_channel, provider_banner
+from .config import verify_provider, ApiKeys, Config, ensure_dirs, get_channel, provider_banner
 from .llm import LLM
 from .material import fetch_material
 from .models import Story
@@ -366,7 +366,10 @@ def run(
     # ---------- 2. 大纲
     stats = {"rule_fail": 0, "rule_warn": 0, "audit_issues": 0, "regenerated_chapters": []}
     regenerated: set[int] = set()
-    with LLM(cfg, keys) as llm:
+    # 写稿用 llm.provider（可能被用户切成 MiniMax），审校/复检固定走 verify.provider
+    # （默认 DeepSeek）—— 两个模型互相挑错，比同模型自查靠谱。
+    with LLM(cfg, keys) as llm, \
+            LLM(cfg, keys, provider=verify_provider(cfg)) as audit_llm:
         # ---- 选题的两级：类型（L1）+ 这一期讲什么（L2）
         # 池子里挑的题自带两级；手填的 -t 没有 → 在这里补（判类型 + 生成描述）。
         # 实现在 topics.fill_levels（cmd_plan 也走它，免得两条路长歪）；
@@ -380,7 +383,7 @@ def run(
                               series=series, series_ep=series_ep)
 
         # ---------- 2.5 锚点核查（写稿前把编造的出处挡掉）
-        stats["fact_audit"] = verify.audit_facts(story, cfg, llm)
+        stats["fact_audit"] = verify.audit_facts(story, cfg, audit_llm)
 
         # ---------- 3. 写稿
         story = write_all(story, cfg, llm)
@@ -409,7 +412,7 @@ def run(
             renumber_scenes(story)
 
         # ---------- 5. 史实审校（LLM 层）
-        audit = verify.llm_audit(story, cfg, llm)
+        audit = verify.llm_audit(story, cfg, audit_llm)
         stats["audit_issues"] = len(audit)
         if audit:
             verify.report(audit)
@@ -429,7 +432,7 @@ def run(
             log.info("史实审校：未发现需要修改的问题")
 
         # ---------- 5.5 复检：改写之后必须再验一遍（这是「有问题要有校验」的落点）
-        recheck = verify.final_check(story, cfg, llm)
+        recheck = verify.final_check(story, cfg, audit_llm)
         stats["recheck_fail"] = len(recheck["fails"])
         stats["recheck_warn"] = len(recheck["warns"])
         if recheck["fails"]:
