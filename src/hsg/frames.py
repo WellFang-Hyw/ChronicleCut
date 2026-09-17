@@ -103,14 +103,27 @@ def overlay_layer(out: Path, size: tuple[int, int], cfg: Config, *,
     return fg_path
 
 
-def ink_band(png: Path, y0: float, y1: float) -> int:
-    """数这个横条里有几个不透明像素 —— 位置类改动靠它按像素验收，不靠眼睛看。
+def ink_band(png: Path, y0: float, y1: float, x0: float = 0.0, x1: float = 1.0,
+             min_luma: int = 0) -> int:
+    """数这个矩形区域里有几个不透明像素 —— 位置类改动靠它按像素验收，不靠眼睛看。
 
     （为什么要这个工具：上一轮靠视觉模型目测标语位置，结论正好判反了。）
+
+    `x0`/`x1` 给的是**横向范围**（比例）：要验「关键词在左上角」就得同时限定
+    纵向条带和左侧范围，只看纵向分不出居中还是靠左。
+
+    `min_luma`：只数**足够亮的像素**（文字是近白色）。默认 0 = 数所有不透明像素，
+    但那样会把半透明遮罩（压暗条/渐变）也算进来 —— 踩过：验「没给大字时这里是空的」
+    永远不通过，因为遮罩本来就有 alpha。
     """
     with Image.open(png) as im:
         im = im.convert("RGBA")
         w, h = im.size
-        band = im.crop((0, int(h * y0), w, int(h * y1)))
-        alpha = band.getchannel("A")
-        return sum(1 for v in alpha.getdata() if v > 40)
+        box = (int(w * x0), int(h * y0), int(w * x1), int(h * y1))
+        crop = im.crop(box)
+        alpha = crop.getchannel("A")
+        rgb = crop.convert("RGB")
+        if min_luma <= 0:
+            return sum(1 for v in alpha.getdata() if v > 40)
+        return sum(1 for a, px in zip(alpha.getdata(), rgb.getdata())
+                   if a > 40 and (px[0] + px[1] + px[2]) / 3 >= min_luma)

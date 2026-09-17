@@ -55,30 +55,58 @@ def check_true(name: str, cond: bool, detail: str = "") -> None:
 
 
 def make_clip(dst: Path, seconds: float, size: str, rate: int = 30) -> Path:
-    """合成一段「像素材」的片子：有运动、带音频（考验导入工具去音轨）。"""
+    """合成一段「像素材」的片子：有运动、带音频（考验导入工具去音轨）。
+
+    画面 = **12 像素棋盘格**（不是 testsrc2/彩条）。为什么要这么挑：
+    blurpad 的验收靠「素材本体 vs 模糊衬底」的高频能量比，而**模糊只杀高频细节**
+    —— 宽色块的边界模糊后照样有能量，编码也会把细噪声磨平（这两条都踩过，
+    比值只有 1.08~1.34，判据形同虚设）。12px 棋盘格正好在中间：
+    缩放扛得住、blur 一定抹掉。
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    video.run_ffmpeg(["-f", "lavfi", "-i", f"testsrc2=size={size}:rate={rate}",
+    w, hgt = (int(x) for x in size.lower().split("x"))
+    video.run_ffmpeg(["-f", "lavfi", "-i", f"nullsrc=s={size}:r={rate}",
                       "-f", "lavfi", "-i", "sine=frequency=440",
+                      "-vf", "geq=lum='if(mod(floor(X/12)+floor(Y/12),2),235,16)':cb=128:cr=128",
                       "-t", f"{seconds:.2f}", "-c:v", "libx264", "-preset", "ultrafast",
                       "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-y", dst.name],
                      cwd=dst.parent, desc=f"合成素材 {dst.name}")
     return dst
 
 
-def band_energy(frame: Path, y0: float, y1: float) -> float:
-    """这一横条的「边缘能量」= 横向相邻像素亮度差的平均值。
+def band_energy(frame: Path, y0: float, y1: float,
+                x0: float = 0.0, x1: float = 1.0, stat: str = "mean") -> float:
+    """这一横条的「边缘能量」= 横向相邻像素亮度差的平均值（多行取平均）。
 
-    用来按像素判定「模糊衬底 + 完整画面」（blurpad）到底有没有生效：
-    中间那条保留源素材细节 → 能量高；上下两条被 boxblur 过 → 能量低。
-    光看图看不出来 —— 如果素材本身是大色块，模糊与否长得一样（踩过）。
+    用来按像素判定 blurpad 有没有生效：素材本体保留细节 → 能量高；
+    上下衬底被 boxblur 过 → 能量低。光看图看不出来（素材本身是大色块时模糊与否一样）。
+
+    `x0`/`x1` 限定横向范围：**必须避开叠加文字**。文字（白字黑边）是最强的"高频"，
+    左上角的关键词和底部字幕都曾把判据带歪（踩过：关键词挪到左上角后，
+    上条带能量反而比中间高，判据直接失效）。
     """
     from PIL import Image
     with Image.open(frame) as im:
         g = im.convert("L")
         w, h = g.size
-        y = int(h * (y0 + y1) / 2)
-        px = g.crop((0, y, w, y + 1)).load()
-    return round(sum(abs(px[i, 0] - px[i - 1, 0]) for i in range(1, w)) / (w - 1), 3)
+        xa, xb = int(w * x0), int(w * x1)
+        ya, yb = int(h * y0), max(int(h * y0) + 1, int(h * y1))
+        band = g.crop((xa, ya, xb, yb))
+    bw, bh = band.size
+    vals = list(band.get_flattened_data()) if hasattr(band, "get_flattened_data") \
+        else list(band.getdata())
+    rows = []
+    for r in range(bh):
+        row = vals[r * bw:(r + 1) * bw]
+        rows.append(sum(abs(row[i] - row[i - 1]) for i in range(1, len(row)))
+                    / max(1, len(row) - 1))
+    if not rows:
+        return 0.0
+    if stat == "median":
+        # 中位数：文字只占少数行，用中位数就不会被"那一行字"带偏（均值会被带偏）
+        rows.sort()
+        return round(rows[len(rows) // 2], 3)
+    return round(sum(rows) / len(rows), 3)
 
 
 def main() -> int:
@@ -267,31 +295,51 @@ def main() -> int:
 
     fg = next(iter(slide_root.rglob("seg_001_sh01_fg.png")), None)
     if fg:
-        ink_callout = frames.ink_band(fg, 0.40, 0.52)
+        # 关键词（大字标注）现在在**左上角**：纵向 0.08-0.20、横向左半边。
+        # 原来压在画面正中（0.40-0.52），会挡住素材主体（人脸/朝堂就在中间）。
+        ink_callout = frames.ink_band(fg, 0.08, 0.18, 0.0, 0.60)
+        ink_mid = frames.ink_band(fg, 0.40, 0.52)
         ink_nametag = frames.ink_band(fg, 0.57, 0.67)
         ink_top = frames.ink_band(fg, 0.04, 0.09)
-        check("大字标注落在中部带（0.40-0.52）", ink_callout > 200, f"{ink_callout} 像素")
+        check("关键词落在左上角（纵向 0.08-0.18 / 左 60% 宽以内）",
+              ink_callout > 200, f"{ink_callout} 像素")
+        check("画面正中不再压着大字（关键词已从中间挪走）",
+              ink_mid < 80, f"{ink_mid} 像素")
         check("人名条落在左侧带（0.57-0.67）", ink_nametag > 200, f"{ink_nametag} 像素")
         check("顶部小字带（系列标签「栏目 · 系列名 第N集」）", ink_top > 50, f"{ink_top} 像素")
     else:
         check("标注层存在", False, "没找到 fg.png")
 
+    # ---- blurpad：直接验**生产滤镜链**，不靠"抽到哪一秒"的运气
+    #
+    # 这段的历史：原来在竖屏成片里抽一帧、比「中间带 vs 上下带」的能量比。
+    # 它长期靠运气通过 —— 抽到渐变占位图时整幅平坦（两边都接近 0，比了个寂寞），
+    # 抽到 freeze_zoom（定格放大，整幅铺满、根本不走模糊衬底）时整幅是同一块图案。
+    # 关键词一挪位置判据就暴露了，连查三轮才发现是"取帧时机"的问题，不是渲染的问题。
+    # 现在改成：拿真实素材（12px 棋盘格）+ **生产用的 _fit_chain** 出图，
+    # 逐行能量用中位数比 —— 判据强（模糊版 0.0 vs 未模糊 23.8），且与抽帧时机无关。
     if "portrait" in fins:
-        # 竖屏放横屏素材：必须「完整画面居中 + 上下模糊衬底」，不能硬裁掉两边
-        frame = work / "_portrait_check.jpg"
-        video.run_ffmpeg(["-ss", "6", "-i", str(fins["portrait"]), "-frames:v", "1",
-                          "-q:v", "1", "-y", frame.name], cwd=work, desc="抽帧验收")
-        mid = band_energy(frame, 0.44, 0.56)
-        edge = max(band_energy(frame, 0.02, 0.12), band_energy(frame, 0.88, 0.98))
-        # 阈值按生产规格 1080x1920 标定（那里实测约 5.8×）。--small 只有 540x960：
-        # 同一 CRF 下编码块效应在低分辨率里占的比重更大，而模糊衬底本来就没有细节，
-        # 被块效应「补」回来的高频相对更多 → 比值天然变低（实测 2.5×）。
-        # 所以小尺寸放宽阈值，但仍然要求「中间明显比衬底清楚」，并把数字打出来备查。
-        ratio = 1.8 if args.small else 2.5
-        check_true("竖屏：中间是完整画面、上下是模糊衬底（blurpad 生效）",
-                   mid > edge * ratio,
-                   f"中间能量 {mid} / 衬底 {edge}（要求 ×{ratio}）"
-                   + ("　--small：阈值放宽，严格标定看 1080x1920" if args.small else ""))
+        print("\n[blurpad] 生产滤镜链按像素验收（自造高频素材，不依赖抽帧时机）")
+        from hsg import shotvideo
+        probe_src = work / "_probe_src.mp4"
+        if not probe_src.exists():
+            make_clip(probe_src, 1.5, "960x540")
+        energies = {}
+        for fit in ("blurpad", "cover"):
+            chain = shotvideo._fit_chain((540, 960), 30, fit)
+            shot = work / f"_probe_{fit}.jpg"
+            video.run_ffmpeg(["-i", probe_src.name, "-filter_complex", f"[0:v]{chain}[v]",
+                              "-map", "[v]", "-frames:v", "1", "-q:v", "1", "-y", shot.name],
+                             cwd=work, desc=f"blurpad 验收出图（{fit}）")
+            center = band_energy(shot, 0.36, 0.64, 0.05, 0.55, stat="median")
+            edge = band_energy(shot, 0.05, 0.25, 0.05, 0.55, stat="median")
+            energies[fit] = (center, edge)
+            check(f"{fit}：中间完整画面 + 上下模糊衬底（本体能量 {center} vs 衬底 {edge}）",
+                  center > edge * 3 if fit == "blurpad" else edge > 5,
+                  f"{center} / {edge}")
+        check_true("对照：cover（裁满）没有模糊衬底（证明判据能分辨两种 fit）",
+                   energies["cover"][1] > energies["blurpad"][1] * 3,
+                   f"cover 衬底 {energies['cover'][1]} vs blurpad 衬底 {energies['blurpad'][1]}")
 
     print("\n" + "=" * 70)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

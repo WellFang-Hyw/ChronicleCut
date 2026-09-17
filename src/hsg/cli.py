@@ -502,7 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "plan", "probe-tts", "probe-images", "voices",
                             "smoke", "smoke-clips", "test", "history", "agent", "topics", "series",
-                            "sources"],
+                            "sources", "comic"],
                    help="默认 run")
     p.add_argument("series_name", nargs="?", default="",
                    help="series 命令的系列名（run.bat series \"古代十大权臣\"）")
@@ -557,6 +557,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="agent：status 看卡在哪（默认）/ sources 只刷新取景单 / "
                          "1 出脚本+素材需求清单 / 2 AI 剪辑+出片")
     g3.add_argument("--metadata", help="agent --stage 2：指定某一期的 metadata.json（默认取最新）")
+    g4 = p.add_argument_group("comic（四格漫画素材）")
+    g4.add_argument("--slots", help="只做这些槽位（如 s01_sh1,s04_sh1）；不填=全部槽位")
+    g4.add_argument("--must-only", action="store_true",
+                    help="只做「必须」优先级的槽位（就是现在要手工剪素材的那几处）")
+    g4.add_argument("--limit", type=int, help="最多做几个槽位（试水/控成本用）")
+    g4.add_argument("--layout", help="格子排布 2x2 / 1x4 / 4x1（覆盖 comic.layout）")
+    g4.add_argument("--list", dest="list_only", action="store_true",
+                    help="只列出会做哪些槽位，不调 API")
     g2.add_argument("--log-level", default=None, help="DEBUG / INFO / WARNING")
     return p
 
@@ -623,6 +631,124 @@ def cmd_topics(cfg, args) -> int:
     return 0
 
 
+def cmd_comic(cfg, args) -> int:
+    """四格漫画素材：槽位描述 → 扩写四拍 → image-01 出图 → 出提示词清单。
+
+    槽位（s01_sh1…）选得跟「素材需求清单」完全一致 —— 它是**同一个工作单**的另一条实现，
+    所以清单里标「必须」的那几处，就是这条路线最先要出的那几张。
+    """
+    import glob
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import comic as comic_mod
+    from .llm import LLM
+
+    # ---- 找这一期的素材需求清单（槽位来源）；--metadata 给了就按它的选题标题匹配
+    topic = ""
+    if getattr(args, "metadata", None):
+        try:
+            topic = str(json.loads(Path(args.metadata).read_text(encoding="utf-8"))
+                        .get("topic") or "")
+        except Exception as exc:  # noqa: BLE001
+            print(f"读不了 metadata：{exc}")
+    cands = sorted(glob.glob(str(Path(cfg.paths.get("data_dir", "data")) / "needs"
+                               / "*_素材需求.json")))
+    hit = [f for f in cands if topic and topic in f] or cands
+    if not hit:
+        print("找不到素材需求清单，先跑：run.bat agent --stage 1")
+        return 2
+    needs_path = Path(hit[-1])
+    needs = json.loads(needs_path.read_text(encoding="utf-8"))
+    rows = list(needs.get("slots") or [])
+    if not rows:
+        print(f"{needs_path.name} 里没有槽位")
+        return 2
+
+    want = {s.strip() for s in str(getattr(args, "slots", "") or "").split(",") if s.strip()}
+    if want:
+        rows = [r for r in rows if str(r.get("slot")) in want]
+    elif getattr(args, "must_only", False):
+        rows = [r for r in rows if str(r.get("priority")) == "must"]
+    if getattr(args, "limit", None):
+        rows = rows[: int(args.limit)]
+    if not rows:
+        print("筛选后没有槽位可做（换个 --slots / --must-only）")
+        return 2
+
+    if getattr(args, "layout", None):
+        cfg.comic["layout"] = str(args.layout)
+    total = len(rows)
+    print(f"=== 四格漫画：{needs.get('title') or needs_path.stem} ===")
+    print(f"清单：{needs_path.name}　槽位 {total} 个"
+          f"（全部槽位 {len(needs.get('slots') or [])} 个）")
+    print(f"排布 {cfg.comic.get('layout')}／画幅 {cfg.comic.get('aspect')}／"
+          f"模型 {cfg.comic.get('model')}／扩写 {'开' if cfg.comic.get('expand_prompt') else '关'}")
+    if getattr(args, "list_only", False):
+        for r in rows:
+            print(f"  {r.get('slot'):8s} {str(r.get('need') or '')[:44]}")
+        return 0
+
+    # ---- ① 扩写（LLM，并发几路）
+    def _expand(r: dict) -> dict:
+        seed = {"scene": r.get("scene"), "narration": r.get("narration") or r.get("need"),
+                "caption": r.get("need") or "", "heading": r.get("heading") or ""}
+        story_like = type("S", (), {"period": r.get("era") or needs.get("era") or ""})()
+        ex = comic_mod.expand(seed, story_like, cfg, llm)
+        name = f"{r.get('slot')}"
+        return {"name": name, "slot": name, "scene": r.get("scene"),
+                "heading": r.get("heading"), "narration": r.get("narration"),
+                "need": r.get("need"), "dur": r.get("dur"),
+                "panels": ex.get("panels"), "continuity": ex.get("continuity"),
+                "expanded": ex.get("expanded"),
+                "prompt": comic_mod.build_prompt(ex, cfg),
+                "people": r.get("people") or []}
+
+    with LLM(cfg) as llm:
+        with ThreadPoolExecutor(max_workers=max(1, int(cfg.llm.get("concurrency", 4)))) as pool:
+            items = list(pool.map(_expand, rows))
+    ok = sum(1 for i in items if i.get("expanded"))
+    print(f"\n① 扩写完成：{ok}/{total} 用了 LLM 四拍，其余为机械四拍兜底")
+
+    # ---- ② 出图（image-01，并发几路）
+    def _gen(it: dict) -> dict:
+        path, rec = comic_mod.generate(it["name"], it["prompt"], cfg,
+                                       force=bool(getattr(args, "force", False)))
+        it["file"] = path.name if path else None
+        it["error"] = rec.get("error")
+        it["seconds"] = rec.get("seconds")
+        it["reused"] = bool(rec.get("reused"))
+        return it
+
+    with ThreadPoolExecutor(max_workers=max(1, int(cfg.images.get("concurrency", 4)))) as pool:
+        items = list(pool.map(_gen, items))
+    made = sum(1 for i in items if i.get("file"))
+    print(f"② 出图完成：{made}/{total}"
+          f"（复用缓存 {sum(1 for i in items if i.get('reused'))} 张）")
+
+    # ---- ③ 归档：提示词清单（人要读的）+ 槽位映射（渲染要用的）
+    data_dir = Path(cfg.paths.get("data_dir", "data"))
+    stem = needs_path.stem.replace("_素材需求", "")
+    wl = comic_mod.write_worklist(items, data_dir / "comics" / f"{stem}_漫画提示词.md",
+                                  title=str(needs.get("title") or ""))
+    mapping = {"title": needs.get("title"), "needs": needs_path.name,
+               "layout": cfg.comic.get("layout"), "aspect": cfg.comic.get("aspect"),
+               "model": cfg.comic.get("model"),
+               "slots": [{"slot": i["slot"], "scene": i["scene"], "dur": i["dur"],
+                          "file": i.get("file"), "expanded": i.get("expanded"),
+                          "panels": i.get("panels")} for i in items]}
+    (data_dir / "comics" / f"{stem}_漫画.json").write_text(
+        json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n③ 提示词清单：{wl}")
+    print(f"   槽位映射：{data_dir / 'comics' / f'{stem}_漫画.json'}")
+    bad = [i for i in items if not i.get("file")]
+    for i in bad:
+        print(f"   ✗ {i['slot']}：{i.get('error')}")
+    print("下一步：看着清单调好画风/描述后重跑（--force 重出），"
+          "再把 comic.enabled 打开让渲染用漫画铺镜头。")
+    return 0 if made else 1
+
+
 def cmd_agent(cfg, args) -> int:
     """生产线编排：阶段闸门 + AI 剪辑决策 + 自检（见 hsg/agent.py）。"""
     from .agent import main_agent
@@ -641,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         "smoke": cmd_smoke, "smoke-clips": cmd_smoke_clips,
         "test": cmd_test, "history": cmd_history,
         "agent": cmd_agent, "topics": cmd_topics, "series": cmd_series,
-        "sources": cmd_agent,
+        "sources": cmd_agent, "comic": cmd_comic,
     }
     return handlers[args.command](cfg, args)
 

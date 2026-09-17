@@ -45,6 +45,25 @@ def _even(n: float) -> int:
     return v - (v % 2)
 
 
+def _blurpad(im: Image.Image, size: tuple[int, int], blur: int = 28,
+             darken: float = 0.10) -> Image.Image:
+    """完整画面居中 + 四周用同一张图放大模糊当底（跟 `clips.fit=blurpad` 一个思路）。
+
+    为什么四格漫画必须走这条：漫画格是**方形**，画布是 16:9 / 9:16。
+    走 `_cover_crop`（默认）会裁掉格子的上下或左右 —— 实测把人物头部和卷轴下端切掉了
+    （画面上看得出"这个人没头"，很难解释）。blurpad 保证整格都在画面里。
+    """
+    tw, th = size
+    bg = _cover_crop(im, size).filter(ImageFilter.GaussianBlur(radius=blur))
+    if darken > 0:
+        bg = Image.blend(bg, Image.new("RGB", size, (0, 0, 0)), darken)
+    sw, sh = im.size
+    scale = min(tw / sw, th / sh)
+    fg = im.resize((max(1, int(sw * scale)), max(1, int(sh * scale))), Image.LANCZOS)
+    bg.paste(fg, ((tw - fg.width) // 2, (th - fg.height) // 2))
+    return bg
+
+
 def _cover_crop(im: Image.Image, size: tuple[int, int]) -> Image.Image:
     tw, th = size
     sw, sh = im.size
@@ -53,6 +72,17 @@ def _cover_crop(im: Image.Image, size: tuple[int, int]) -> Image.Image:
     im = im.resize((nw, nh), Image.LANCZOS)
     left, top = (nw - tw) // 2, (nh - th) // 2
     return im.crop((left, top, left + tw, top + th))
+
+
+def hex_rgb(value, default: tuple[int, int, int]) -> tuple[int, int, int]:
+    """「0xC2571A」/「#c2571a」→ (194, 87, 26)；给了坏值就用默认色。"""
+    h = str(value or "").replace("0x", "").replace("#", "").strip()
+    try:
+        if len(h) != 6:
+            raise ValueError(h)
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    except (ValueError, IndexError):
+        return default
 
 
 def _gradient(size: tuple[int, int], base: tuple[int, int, int]) -> Image.Image:
@@ -84,27 +114,33 @@ def _wrap_cjk(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[s
 
 def _draw_block(draw: ImageDraw.ImageDraw, lines: list[str], font, cx: int, top: int,
                 *, fill=(255, 255, 255), outline=(0, 0, 0), outline_w: int = 3,
-                line_gap: int = 10) -> int:
+                line_gap: int = 10, align: str = "center") -> int:
+    """画一段多行文字。
+
+    `align="center"`：`cx` 是**中心**（默认，绝大多数文字都居中）。
+    `align="left"`：`cx` 变成**左边缘** —— 左上角的关键词徽标要用它。
+    """
     y = top
     ascent, descent = font.getmetrics()
     for ln in lines:
         w = font.getlength(ln)
+        x = cx if align == "left" else cx - w / 2
         if outline_w > 0:
-            draw.text((cx - w / 2, y), ln, font=font, fill=fill,
+            draw.text((x, y), ln, font=font, fill=fill,
                       stroke_width=outline_w, stroke_fill=outline)
         else:
-            draw.text((cx - w / 2, y), ln, font=font, fill=fill)
+            draw.text((x, y), ln, font=font, fill=fill)
         y += ascent + descent + line_gap
     return y
 
 
 def _vertical_scrim(size: tuple[int, int], y0: float, y1: float,
-                    a0: int, a1: int) -> Image.Image:
+                    a0: int, a1: int, color: tuple[int, int, int] = (0, 0, 0)) -> Image.Image:
     """竖向透明渐变遮罩（用于上下压暗，提升文字可读性）。"""
     tw, th = size
     ya, yb = int(th * y0), int(th * y1)
     h = max(1, yb - ya)
-    strip = Image.new("RGBA", (1, h))
+    strip = Image.new("RGBA", (1, h), (*color, 0))
     px = strip.load()
     for i in range(h):
         a = int(a0 + (a1 - a0) * (i / max(1, h - 1)))
@@ -118,7 +154,13 @@ def _vertical_scrim(size: tuple[int, int], y0: float, y1: float,
 # 版面分区（改这里要同步改 test_verify 的像素断言）：
 #   0.045-0.075 栏目小字　0.085-0.255 章节标题　0.41-0.51 大字标注
 #   0.59-0.65 人名条　0.72 附近 图注　底部 字幕
-CALLOUT_CY = 0.46          # 大字标注的垂直中心
+# 大字标注（关键词）默认放在**画面左上角**：它原来压在画面正中，会挡住素材的主体
+# （实测观众想看的是人脸/朝堂，中间那块正是画面最有信息量的地方）。
+# 同时章节标题**下移让位**（见 TITLE_TOP），两个元素都落在上三分之一里，互不重叠。
+CALLOUT_CX = 0.06          # 大字标注的左边缘（比例）
+CALLOUT_CY = 0.135         # 大字标注的垂直中心
+CALLOUT_ALIGN = "left"     # left（左上角）| center（旧的居中样式）
+TITLE_TOP = 0.20           # 章节标题区的起点（原来 0.085，给左上角的关键词让位）
 NAMETAG_CY = 0.62          # 人名条的垂直中心
 
 
@@ -144,23 +186,30 @@ def draw_callout(fg: Image.Image, cfg: Config, text: str) -> Image.Image:
     if not text:
         return fg
     tw, th = fg.size
-    size = int(min(tw * 0.13, th * 0.085))
+    size = int(min(tw * 0.115, th * 0.075))
     font = _font(size, bold=True)
-    while font.getlength(text) > tw * 0.80 and size > 20:
+    limit = float(cfg.video.get("callout_max_width", 0.62))
+    while font.getlength(text) > tw * limit and size > 20:
         size = int(size * 0.9)
         font = _font(size, bold=True)
     a, d = font.getmetrics()
     block_h = a + d
-    top = int(th * CALLOUT_CY) - block_h // 2
+    cx = float(cfg.video.get("callout_cx", CALLOUT_CX))
+    cy = float(cfg.video.get("callout_cy", CALLOUT_CY))
+    align = str(cfg.video.get("callout_align", CALLOUT_ALIGN) or CALLOUT_ALIGN)
+    top = int(th * cy) - block_h // 2
     pad_y = int(block_h * 0.28)
-    pad_x = int(tw * 0.06)
+    pad_x = int(tw * 0.045)
     bar_w = int(font.getlength(text)) + 2 * pad_x
     bar = _rounded_bar((bar_w, block_h + 2 * pad_y), alpha=132,
                        accent=(212, 175, 55), accent_w=max(4, int(block_h * 0.10)))
-    fg.alpha_composite(bar, (max(0, (tw - bar_w) // 2), max(0, top - pad_y)))
+    bar_x = max(0, (tw - bar_w) // 2) if align == "center" else max(0, int(tw * cx))
+    text_x = (tw // 2) if align == "center" else int(tw * cx) + pad_x
+    fg.alpha_composite(bar, (bar_x, max(0, top - pad_y)))
     draw = ImageDraw.Draw(fg)
-    _draw_block(draw, [text], font, tw // 2, top, fill=(255, 245, 214),
-                outline=(0, 0, 0), outline_w=max(4, size // 12), line_gap=0)
+    _draw_block(draw, [text], font, text_x, top, fill=(255, 245, 214),
+                outline=(0, 0, 0), outline_w=max(4, size // 12), line_gap=0,
+                align="left" if align != "center" else "center")
     return fg
 
 
@@ -203,6 +252,7 @@ def build_layers(
     callout: str = "",
     nametag: str = "",
     darken: float = 0.34,
+    fit: str = "",
 ) -> tuple[Path, Path]:
     """合成一个分镜的背景层与前景层。"""
     tw, th = size
@@ -219,7 +269,11 @@ def build_layers(
     if image_path and Path(image_path).exists():
         try:
             with Image.open(image_path) as src:
-                bg = _cover_crop(src.convert("RGB"), (bw, bh))
+                rgb_src = src.convert("RGB")
+                # fit=cover（默认，配图用）/ fit=blurpad（四格漫画用，见 _blurpad 注释）
+                bg = (_blurpad(rgb_src, (bw, bh))
+                      if str(fit or "").lower() == "blurpad"
+                      else _cover_crop(rgb_src, (bw, bh)))
         except Exception as exc:  # noqa: BLE001
             log.warning("配图处理失败(%s)，用渐变底图：%s", Path(image_path).name, exc)
             bg = _gradient((bw, bh), base_rgb)
@@ -249,8 +303,8 @@ def build_layers(
 
     # ---- 章节标题：字号自适应，最多 2 行，不侵入字幕区
     if title:
-        avail_top = int(th * 0.085)
-        avail_bottom = int(th * 0.255)
+        avail_top = int(th * float(cfg.video.get("title_top", TITLE_TOP)))
+        avail_bottom = int(th * float(cfg.video.get("title_bottom", 0.38)))
         avail_h = max(60, avail_bottom - avail_top)
         base = int(min(tw * 0.072, th * 0.048))
         f = _font(base, bold=True)
@@ -436,12 +490,11 @@ def build_cover(
     title_font_px = int(min(tw * (0.105 if portrait else 0.070), th * (0.055 if portrait else 0.105)))
     margin_x = int(tw * 0.08)
 
-    # ---------------- 背景
-    bg_hex = str(cfg.video.get("fallback_bg", "0x101820")).replace("0x", "").replace("#", "")
-    try:
-        base_rgb = tuple(int(bg_hex[i:i + 2], 16) for i in (0, 2, 4))
-    except (ValueError, IndexError):
-        base_rgb = (16, 24, 32)
+    # ---------------- 背景（橙色风格：底图不管什么颜色，一律往橙色拉一遍）
+    base_rgb = hex_rgb(cfg.video.get("cover_base", "#5A2A0C"), (90, 42, 12))
+    tint_rgb = hex_rgb(cfg.video.get("cover_tint", "#C2571A"), (194, 87, 26))
+    tint_alpha = float(cfg.video.get("cover_tint_alpha", 0.46))
+    warm_dark = hex_rgb(cfg.video.get("cover_scrim", "#1A0A02"), (26, 10, 2))
     bg = None
     if image_path and Path(image_path).exists():
         try:
@@ -451,18 +504,24 @@ def build_cover(
             log.warning("封面配图处理失败(%s)，用渐变底：%s", Path(image_path).name, exc)
     if bg is None:
         bg = _gradient((tw, th), base_rgb)
-    # 封面比画面压得更暗 —— 标题大、要压得住图
+    # 色调统一：不管底图原来是冷色还是彩色，都往橙色拉 —— 封面是最先被看到的一帧，
+    # 一整套橙色比"每期颜色都不一样"更像一个栏目的片子（用户 2026-09-16 要求）。
+    if tint_alpha > 0:
+        bg = Image.blend(bg, Image.new("RGB", (tw, th), tint_rgb),
+                         min(1.0, max(0.0, tint_alpha)))
+    # 封面比画面压得更暗 —— 标题大、要压得住图（压暗也用暖色，别拉回冷调）
     darken = float(cfg.video.get("cover_darken", 0.5))
     if darken > 0:
-        bg = Image.blend(bg, Image.new("RGB", (tw, th), (0, 0, 0)), min(0.85, max(0.0, darken)))
+        bg = Image.blend(bg, Image.new("RGB", (tw, th), warm_dark),
+                         min(0.85, max(0.0, darken)))
     bg = bg.filter(ImageFilter.GaussianBlur(radius=0.8))
     if bg.mode != "RGB":
         bg = bg.convert("RGB")
 
     # ---------------- 前景（直接合成到背景上，封面就一张图）
     fg = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-    fg.alpha_composite(_vertical_scrim((tw, th), 0.0, 0.42, 150, 0))
-    fg.alpha_composite(_vertical_scrim((tw, th), 0.55, 1.0, 0, 130))
+    fg.alpha_composite(_vertical_scrim((tw, th), 0.0, 0.42, 150, 0, warm_dark))
+    fg.alpha_composite(_vertical_scrim((tw, th), 0.55, 1.0, 0, 130, warm_dark))
     draw = ImageDraw.Draw(fg)
 
     # 顶部：栏目名
@@ -471,7 +530,13 @@ def build_cover(
         f = _font(int(min(tw * 0.040, th * 0.022)), bold=True)
         lines = _wrap_cjk(kicker, f, tw - 2 * margin_x)[:1]
         _draw_block(draw, lines, f, tw // 2, y, fill=(255, 219, 120), outline_w=2, line_gap=6)
-        y += (f.getmetrics()[0] + f.getmetrics()[1]) + int(th * 0.055)
+        y += (f.getmetrics()[0] + f.getmetrics()[1]) + int(th * 0.018)
+        # 橙色装饰条：把"栏目名"和"标题"分开，也是橙色风格的视觉锚点
+        rule_w = int(tw * 0.16)
+        rule_h = max(3, int(th * 0.006))
+        draw.rectangle([(tw - rule_w) // 2, y, (tw + rule_w) // 2, y + rule_h],
+                       fill=(*tint_rgb, 235))
+        y += rule_h + int(th * 0.030)
 
     # 中部：主标题（字号自适应，最多 3 行，不超出可用高度）
     #

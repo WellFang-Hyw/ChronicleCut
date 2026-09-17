@@ -40,3 +40,4 @@ dist/
 # 片源下载（B站/YouTube）：cookie 文件等于账号凭据，绝不提交
 *cookies*.txt
 data/downloads/
+data/comics/

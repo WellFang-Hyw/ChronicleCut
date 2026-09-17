@@ -41,8 +41,9 @@ TREATMENTS = ("plain", "slow_push", "freeze_zoom", "still_pan")
 TREATMENT_ZH = {"plain": "直接铺", "slow_push": "慢推", "freeze_zoom": "定格放大",
                 "still_pan": "静态图平移"}
 # 素材来源：真的切片 / 复用同场素材 / 生成图 / 图库静态图
-KINDS = ("clip", "reuse", "generate", "still")
-KIND_ZH = {"clip": "切片", "reuse": "复用", "generate": "生成图", "still": "静态图"}
+KINDS = ("clip", "reuse", "generate", "still", "comic")
+KIND_ZH = {"clip": "切片", "reuse": "复用", "generate": "生成图", "still": "静态图",
+           "comic": "四格漫画"}
 
 
 @dataclass
@@ -115,10 +116,14 @@ def _fallback_shots(rows: list[dict], scene_dur: float, cfg: Config) -> list[Sho
         if left <= 1e-6:
             break
         dur = min(float(r.get("dur") or 0) or left, left)
-        kind = "generate" if str(r.get("fallback")) == "generate" else "still"
+        if bool(cfg.comic.get("enabled", False)):
+            # 四格漫画路线（用户 2026-09-17）：槽位就是一张四格，画面由它铺满
+            kind, treat, note = "comic", "plain", "四格漫画（按槽位生成）"
+        else:
+            kind = "generate" if str(r.get("fallback")) == "generate" else "still"
+            treat, note = "still_pan", "没有可用素材，按回退方案出画面"
         out.append(Shot(slot=str(r.get("slot")), dur=round(dur, 2), kind=kind,
-                        treatment="still_pan", callout=str(r.get("callout") or ""),
-                        note="没有可用素材，按回退方案出画面"))
+                        treatment=treat, callout=str(r.get("callout") or ""), note=note))
         left = round(left - dur, 3)
     if left > 1e-6:      # 槽位时长加起来不够（需求清单是估算的），补到最后一个镜头上
         if out:

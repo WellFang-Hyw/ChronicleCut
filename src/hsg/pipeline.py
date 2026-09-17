@@ -16,6 +16,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from . import clips as clips_mod
+from . import comic as comic_mod
 from . import edl as edl_mod
 from . import frames
 from . import history as history_mod
@@ -173,6 +174,64 @@ def fit_length(
                     "可调 config.yaml 的 story.chapters / seconds_per_chapter 后重跑。",
                     total, total / 60)
     return total
+
+
+_CN_NUM = "一二三四五六七八九十"
+
+
+def num_cn(n: int) -> str:
+    """期号念中文：12 → 十二，7 → 七（「第12期」口播容易被念成「第一二期」）。"""
+    if n <= 0:
+        return ""
+    if n <= 10:
+        return _CN_NUM[n - 1]
+    if n < 20:
+        return "十" + _CN_NUM[n - 11]
+    return str(n)
+
+
+def intro_speech(story, cfg, channel: str) -> str:
+    """片头口播：说清「这是哪个系列、第几期、这一期讲谁」，再接开篇钩子。
+
+    为什么要把系列名和期号念出来（用户 2026-09-16 明确要求，L1 系列 + L2 片名）：
+    观众点进来时并不知道这是系列里的一集 —— 片头不说，后面「上一位/下一位」的承接
+    全是悬空的，系列也立不成栏目资产。所以要有一句自然的"自报家门"，
+    而不是每次都用同一句「本期为您讲述」。
+
+    非系列的单集：保持原来的句式，不要为了统一而硬塞「系列」二字。
+    """
+    ser = str(getattr(story, "series", "") or "").strip()
+    ep = int(getattr(story, "series_ep", 0) or 0)
+    title = str(getattr(story, "title", "") or getattr(story, "topic", "") or "").strip()
+    hook = str(getattr(story, "hook", "") or "").strip()
+    if ser:
+        if ep and ep > 1:
+            # 第 2 期以后不能再喊「从这一期开始」（那是开篇说的话），改成"接着讲"
+            parts = [f"{channel}。我们接着讲《{ser}》。",
+                     f"这是第{num_cn(ep)}期，{title}"]
+        else:
+            parts = [f"{channel}。从这一期开始，我们讲一个系列——《{ser}》。",
+                     (f"这是第{num_cn(ep)}期，{title}" if ep else f"这一期，{title}")]
+    else:
+        parts = [f"{channel}。本期为您讲述《{title}》。"]
+    return join_sentences(*parts, hook)
+
+
+def join_sentences(*parts: str) -> str:
+    """拼句子：只在需要的地方补句号。
+
+    踩过：片名以问号结尾（「…凭什么能换掉皇帝？」），后面又机械地补个「。」，
+    口播文本就成了「？。」—— 字幕里也会显示成双标点。
+    """
+    out = ""
+    for raw in parts:
+        t = str(raw or "").strip()
+        if not t:
+            continue
+        if out and not out.endswith(("。", "！", "？", "…", "；", "，")):
+            out += "。"
+        out += t
+    return out
 
 
 def kicker_text(channel: str, story, chapter=None) -> str:
@@ -593,11 +652,28 @@ def _render_scene_shots(s, plan: dict, story: Story, cfg: Config, size: tuple[in
         clip_id = str(sh.get("clip_id") or "")
         clip_file = clips_mod.clip_file(cfg, clip_id) if clip_id else None
         use_clip = str(sh.get("kind")) in ("clip", "reuse") and clip_file and Path(clip_file).exists()
+        # 四格漫画路线（用户 2026-09-17）：按槽位找图，找到就用它铺满这个镜头
+        comic_sheet = None
+        if str(sh.get("kind")) == "comic":
+            comic_sheet = comic_mod.sheet_for(cfg, str(sh.get("slot") or ""))
+            if comic_sheet is None:
+                log.warning("分镜 %s 的第 %d 个镜头：槽位 %s 没有四格漫画图，"
+                            "退回配图/静态画面（跑 run.bat comic 出图）",
+                            s.index, k, sh.get("slot") or "(空)")
         if str(sh.get("kind")) in ("clip", "reuse") and not use_clip:
             log.warning("分镜 %s 的第 %d 个镜头：素材 %s 文件不在，退回静态画面",
                         s.index, k, clip_id or "(空)")
 
-        if use_clip:
+        if comic_sheet is not None:
+            shotvideo.encode_comic_shot(
+                scene_dir, comic_sheet, out_name, size, sdur, cfg,
+                slide_root=slide_root, stem=f"{stem}_sh{k:02d}", kicker=kicker,
+                title=title, caption=s.caption, callout=callout, nametag=nametag,
+                credit=s.image_credit, layout=str(cfg.comic.get("layout") or "2x2"),
+                fade_in=fade if is_first and k == 1 else 0.0,
+                fade_out=fade if is_last and k == len(shots) else 0.0,
+                motion_mode=s.index + k)
+        elif use_clip:
             if treat == "freeze_zoom":
                 # 定格放大：抽一帧、裁一块放大，然后**当静态图走原来的路径**
                 # （所以不需要任何 zoompan 滤镜，还白捡原有的缓移）
@@ -692,7 +768,7 @@ def render_orientation(story: Story, cfg: Config, orient: str,
 
     # ---- 片头
     if bool(v.get("intro", True)):
-        intro_text = f"{channel}。本期为您讲述《{story.title}》。{story.hook}"
+        intro_text = intro_speech(story, cfg, channel)
         p, dur = _tts_cached(cfg, seg_root, "intro", intro_text) if bool(
             cfg.story.get("intro_speak", True)) else (None, 0.0)
         dur = dur + float(cfg.story.get("intro_seconds_pad", 1.2)) if dur else 3.5

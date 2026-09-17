@@ -134,6 +134,87 @@ def encode_still_shot(
                                 motion_mode=motion_mode, fonts_dir=fonts_dir)
 
 
+def _rel(p: Path, base: Path) -> str:
+    """相对路径 + 正斜杠（ffmpeg 输入用相对写法最省事，避开 Windows 的转义坑）。
+
+    踩过：这里直接传 `bg.name`（文件名）→ ffmpeg 在 workdir 里找不到文件，
+    因为底图/叠字层写在 slide_root 里，只有**相对 workdir 的路径**才对得上。
+    """
+    import os
+    try:
+        r = os.path.relpath(str(p), str(base))
+    except ValueError:      # 不同盘符，只能给绝对路径
+        r = str(p)
+    return r.replace("\\", "/")
+
+
+def encode_comic_shot(
+    workdir: Path,
+    sheet: Path,
+    out_name: str,
+    size: tuple[int, int],
+    duration: float,
+    cfg: Config,
+    *,
+    slide_root: Path,
+    stem: str,
+    kicker: str = "",
+    title: str = "",
+    caption: str = "",
+    callout: str = "",
+    nametag: str = "",
+    credit: str = "",
+    layout: str = "2x2",
+    fade_in: float = 0.0,
+    fade_out: float = 0.0,
+    motion_mode: int = 0,
+) -> Path:
+    """四格漫画镜头：一张 2x2 切四格，**一格一格轮流上屏**（每格 duration/格数）。
+
+    为什么不让整张一起上屏：一格在手机屏上只有半屏高的一半，四格同屏等于四张小图，
+    谁也看不清；一格一格上（每格 1.5-2 秒）才有"翻连环画"的节奏，也把 7 秒用满了。
+
+    每格走的还是**静态图那条链路**（`media.build_layers` 出底图+叠字 → `encode_still_shot`），
+    所以缓移、字幕带、标注位置全都和别的镜头一致，不另起一套。
+
+    章节大标题只在**第一格**上（四格都顶着标题就成了刷屏）。
+    """
+    from . import comic as comic_mod
+    from . import media
+
+    fit = str(cfg.comic.get("fit") or "blurpad")
+    if str(cfg.comic.get("mode") or "panels").lower() == "sheet":
+        # 整张四格一起展示（不做"一格格推进"）。四格同屏在手机上确实偏小，
+        # 但讲"四格之间的呼应/对比"时它更合适 —— 留给配置，别在代码里一棍子打死。
+        bg0, fg0 = media.build_layers(
+            slide_root / f"{stem}_sheet_bg.jpg", slide_root / f"{stem}_sheet_fg.png",
+            size, cfg, image_path=sheet, kicker=kicker, title=title, caption=caption,
+            callout=callout, nametag=nametag, credit=credit, fit=fit)
+        encode_still_shot(workdir, _rel(bg0, workdir), _rel(fg0, workdir), out_name, size,
+                          duration, cfg, motion_mode=motion_mode,
+                          fade_in=fade_in, fade_out=fade_out)
+        return workdir / out_name
+
+    panels = comic_mod.split_panels(sheet, layout)
+    per = duration / max(1, len(panels))
+    names: list[str] = []
+    for j, panel in enumerate(panels, 1):
+        pjpg = slide_root / f"{stem}_p{j}.jpg"
+        panel.convert("RGB").save(pjpg, quality=95)
+        bg, fg = media.build_layers(
+            slide_root / f"{stem}_p{j}_bg.jpg", slide_root / f"{stem}_p{j}_fg.png",
+            size, cfg, image_path=pjpg, kicker=kicker,
+            title=title if j == 1 else "", caption=caption,
+            callout=callout, nametag=nametag, credit=credit, fit=fit)
+        pname = f"{stem}_p{j}.mp4"
+        encode_still_shot(workdir, _rel(bg, workdir), _rel(fg, workdir), pname, size, per, cfg,
+                          motion_mode=motion_mode + j,
+                          fade_in=fade_in if j == 1 else 0.0,
+                          fade_out=fade_out if j == len(panels) else 0.0)
+        names.append(pname)
+    return video.concat_segments(workdir, names, out_name)
+
+
 def finish_scene(
     workdir: Path,
     video_name: str,

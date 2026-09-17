@@ -1393,15 +1393,19 @@ def test_frames() -> None:
         fg_plain = td / "fg_plain.png"
         _, fg_plain = media.build_layers(td / "bg1.jpg", fg_plain, size, cfg, image_path=None,
                                          kicker="历史小故事 · 第1章 示例", title="示例章节")
-        check("没给大字时中部带是空的（不许凭空多出字）",
-              frames.ink_band(fg_plain, 0.40, 0.52), 0)
+        check("没给大字时左上角是空的（不许凭空多出字）",
+              frames.ink_band(fg_plain, 0.075, 0.19, 0.0, 0.70, min_luma=170), 0)
         fg_mark = td / "fg_mark.png"
         _, fg_mark = media.build_layers(td / "bg2.jpg", fg_mark, size, cfg, image_path=None,
                                         kicker="历史小故事 · 第1章 示例", title="示例章节",
                                         callout="亡命东归", nametag="曹操")
-        check_true("大字落在中部带（0.40-0.52）",
-                   frames.ink_band(fg_mark, 0.40, 0.52) > 500,
-                   f"→ {frames.ink_band(fg_mark, 0.40, 0.52)} 像素")
+        # 关键词位置：用户 2026-09-16 要求从画面正中挪到**左上角**
+        check_true("大字落在左上角（纵向 0.075-0.19 / 左 70% 宽）",
+                   frames.ink_band(fg_mark, 0.075, 0.19, 0.0, 0.70, min_luma=170) > 500,
+                   f"→ {frames.ink_band(fg_mark, 0.075, 0.19, 0.0, 0.70, min_luma=170)} 像素")
+        check_true("大字不再压在画面正中（旧位置必须空出来）",
+                   frames.ink_band(fg_mark, 0.40, 0.52, min_luma=170) < 80,
+                   f"→ {frames.ink_band(fg_mark, 0.40, 0.52, min_luma=170)} 像素")
         check_true("人名条落在左下带（0.57-0.67）",
                    frames.ink_band(fg_mark, 0.57, 0.67) > 200,
                    f"→ {frames.ink_band(fg_mark, 0.57, 0.67)} 像素")
@@ -2302,6 +2306,223 @@ def test_pyflakes_gate() -> None:
         print(f"  （另有 {noise} 条无害提示：未用 import / f-string 没占位符，不管）")
 
 
+def test_intro_and_cover_style() -> None:
+    """开场白（念出 L1 系列 + L2 片名）+ 封面橙色风格（按像素验色调）。"""
+    print("\n[开场白 pipeline.intro_speech / 封面橙色 media.build_cover]")
+    import tempfile
+    from pathlib import Path as _P
+
+    from PIL import Image
+
+    from hsg import media, pipeline
+    from hsg.config import load_config
+    from hsg.models import Chapter, Scene, Story
+
+    cfg = load_config()
+
+    def _st(**kw):
+        base = {"topic": "霍光：一个臣子凭什么能换掉皇帝？",
+                "title": "霍光废帝：一个臣子凭什么能换掉皇帝？",
+                "hook": "公元前74年夏天，长安未央宫里。", "series": "古代十大权臣",
+                "series_ep": 1}
+        base.update(kw)
+        return Story(**base)
+
+    txt = pipeline.intro_speech(_st(), cfg, "历史小故事")
+    check_true("开场白念出系列名（L1）", "《古代十大权臣》" in txt, f"→ {txt[:60]}")
+    check_true("开场白念出期号", "第一期" in txt, f"→ {txt[:60]}")
+    check_true("开场白念出片名（L2）", "霍光废帝" in txt, f"→ {txt[:60]}")
+    check_true("开场白接上开篇钩子（不是只有一句报幕）",
+               txt.endswith("长安未央宫里。"), f"→ {txt[-24:]}")
+    check_true("标题以问号结尾时不出现「？。」双标点", "？。" not in txt, f"→ {txt[:70]}")
+    check_true("非系列单集保持原句式（不硬塞「系列」二字）",
+               "系列" not in pipeline.intro_speech(_st(series="", series_ep=0),
+                                                  cfg, "历史小故事")
+               and "本期为您讲述" in pipeline.intro_speech(_st(series="", series_ep=0),
+                                                           cfg, "历史小故事"))
+    t2 = pipeline.intro_speech(_st(series_ep=2, title="曹操：他凭什么挟天子？"), cfg, "历史小故事")
+    check_true("第 2 期不再说「从这一期开始」（改说「接着讲」）",
+               "接着讲" in t2 and "从这一期开始" not in t2, f"→ {t2[:46]}")
+    check_true("第 2 期也报出期号与片名", "第二期" in t2 and "曹操" in t2, f"→ {t2[:46]}")
+    check("期号念中文（12 → 十二）", pipeline.num_cn(12), "十二")
+    check("10 以内念中文", pipeline.num_cn(7), "七")
+    check("问号结尾不加句号", pipeline.join_sentences("他凭什么？", "接着讲"),
+          "他凭什么？接着讲")
+    check("普通句子之间补句号", pipeline.join_sentences("甲", "乙"), "甲。乙")
+
+    # ---- 封面橙色：按像素验色调（R 明显大于 B，整体偏暖）
+    with tempfile.TemporaryDirectory() as td:
+        nd = _P(td)
+        title = "霍光废帝：一个臣子凭什么能换掉皇帝？"
+        cover = media.build_cover(nd / "c.jpg", (1920, 1080), cfg, title=title,
+                                  kicker="历史小故事 · 古代十大权臣 第1集",
+                                  subtitle="公元前1世纪中叶", foot="一盏茶的时间，听一段旧事")
+        check_true("封面出图", cover.exists() and cover.stat().st_size > 5000, str(cover))
+        with Image.open(cover) as im:
+            px = im.convert("RGB").resize((60, 34))
+            data = list(px.getdata())
+            r = sum(p[0] for p in data) / len(data)
+            g = sum(p[1] for p in data) / len(data)
+            b = sum(p[2] for p in data) / len(data)
+        check_true(f"封面整体偏暖（R{r:.0f} > G{g:.0f} > B{b:.0f}）", r > g > b,
+                   f"→ R{r:.0f} G{g:.0f} B{b:.0f}")
+        check_true("橙色够明显（R 至少比 B 高 40）", r - b > 40,
+                   f"→ R-B={r - b:.0f}")
+        # 关掉色调统一 → 应该回到冷色底（证明这个开关真的起作用，不是摆设）
+        cfg2 = load_config()
+        cfg2["video"]["cover_tint_alpha"] = 0.0
+        cfg2["video"]["cover_base"] = "#101820"
+        cover2 = media.build_cover(nd / "c2.jpg", (1920, 1080), cfg2, title=title)
+        with Image.open(cover2) as im:
+            d2 = list(im.convert("RGB").resize((60, 34)).getdata())
+            r2 = sum(p[0] for p in d2) / len(d2)
+            b2 = sum(p[2] for p in d2) / len(d2)
+        check_true("关掉橙色（tint_alpha=0 + 冷色底）→ 不再偏暖", r2 <= b2 + 10,
+                   f"→ R{r2:.0f} B{b2:.0f}")
+
+
+def test_comic() -> None:
+    """四格漫画路线：扩写 / 拼提示词 / 切格 / 一格格上屏 / blurpad 不切头切脚。"""
+    print("\n[四格漫画 comic + shotvideo.encode_comic_shot + media fit]")
+    import subprocess
+    import tempfile
+    from pathlib import Path as _P
+
+    from PIL import Image, ImageDraw
+
+    from hsg import comic as comic_mod
+    from hsg import media, shotvideo
+    from hsg.config import load_config
+
+    cfg = load_config()
+
+    # ---- ① 拼提示词：四格指令 + 画风 + 负面清单
+    ex = {"panels": ["第1格：张三跪在廷上。", "第2格：李四展开帛画。",
+                     "第3格：群臣侧目。", "第4格：窗外天光初亮。"],
+          "continuity": "张三：四十岁，进贤冠，绛色朝服", "style": "连环画风格"}
+    p = comic_mod.build_prompt(ex, cfg)
+    check_true("提示词写明是四格连环画与格子排布", "四格连环画" in p and "2 行 × 2 列" in p, p[:40])
+    check_true("四格按顺序都在提示词里",
+               all(x in p for x in ("第1格", "第2格", "第3格", "第4格")), p[:60])
+    check_true("带上人物与场景统一设定（跨格一致靠它）", "进贤冠" in p, "—")
+    check_true("负面清单点名禁掉对白气泡与文字",
+               "对白气泡" in p and "水印" in p, "—")
+    check_true("不超接口上限 1500 字符", len(p) <= 1500, f"{len(p)} 字符")
+    check_true("不出现连续句号", "。。" not in p, "—")
+
+    # ---- ② 扩写兜底（LLM 不可用时不许断流程）
+    mech = comic_mod.mechanical_panels("第一句。第二句。第三句。第四句。第五句。")
+    check("机械四拍永远是 4 格", len(mech), 4)
+    check_true("机械四拍把五句并成四格（顺序不乱）",
+               mech[0].startswith("第1格") and "第一句" in mech[0], mech[0][:24])
+    short = comic_mod.mechanical_panels("只有一句。")
+    check_true("旁白太短时补空格而不是漏格", len(short) == 4 and "只有一句" in short[0],
+               " / ".join(x[:10] for x in short))
+    ex2 = comic_mod.expand({"scene": 1, "narration": "甲。乙。丙。丁。"},
+                           type("S", (), {"period": "西汉"})(), cfg, None)
+    check_true("没给 LLM 时走机械四拍且标记未扩写",
+               ex2["expanded"] is False and len(ex2["panels"]) == 4, str(ex2["expanded"]))
+
+    # ---- ③ 切格：四格互不重叠、面积均等、读序正确
+    with tempfile.TemporaryDirectory() as td:
+        nd = _P(td)
+        cols = [(220, 30, 30), (30, 200, 30), (30, 60, 220), (240, 210, 40)]
+        im = Image.new("RGB", (400, 400))
+        d = ImageDraw.Draw(im)
+        for j, col in enumerate(cols):
+            r, c = divmod(j, 2)
+            d.rectangle([c * 200, r * 200, (c + 1) * 200 - 1, (r + 1) * 200 - 1], fill=col)
+        sheet = nd / "sheet.jpg"
+        im.save(sheet, quality=98)
+        panels = comic_mod.split_panels(sheet, "2x2")
+        check("切成 4 格", len(panels), 4)
+        check_true("四格尺寸均等", len({x.size for x in panels}) == 1, str(panels[0].size))
+        got = [x.resize((1, 1)).getpixel((0, 0)) for x in panels]
+        near = all(sum(abs(got[j][i] - cols[j][i]) for i in range(3)) < 90 for j in range(4))
+        check_true("按读序切（左上→右上→左下→右下）", near, str(got))
+
+        # ---- ④ 一格一格上屏：四个时间点各对应一格（合成四色卡，判据决定性）
+        work = nd / "seg"
+        slide = work / "slides"
+        slide.mkdir(parents=True)
+        out = shotvideo.encode_comic_shot(work, sheet, "c.mp4", (1280, 720), 8.0, cfg,
+                                          slide_root=slide, stem="t", motion_mode=0)
+        check_true("出段成功", out.exists() and out.stat().st_size > 5000, out.name)
+        import json as _json
+        dur = float(_json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json",
+             str(out)], capture_output=True, text=True).stdout)["format"]["duration"])
+        check_true("段时长 = 8 秒（四格各 2 秒）", abs(dur - 8.0) < 0.3, f"{dur:.2f}s")
+        refs = [list(x.resize((10, 10)).get_flattened_data()) for x in panels]
+        hits = 0
+        for j in range(4):
+            t = (j + 0.5) * 8.0 / 4
+            fr = nd / f"f{j}.jpg"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.2f}",
+                            "-i", str(out), "-frames:v", "1", "-q:v", "1", "-y", str(fr)],
+                           check=True)
+            img = Image.open(fr).convert("RGB")
+            w, h = img.size
+            sig = list(img.crop((int(w * .30), int(h * .34), int(w * .70),
+                                 int(h * .58))).resize((10, 10)).get_flattened_data())
+            def dist(a, b):
+                return sum((x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2 + (x[2] - y[2]) ** 2
+                           for x, y in zip(a, b)) ** 0.5
+            ds = [dist(sig, r) for r in refs]
+            hits += (ds.index(min(ds)) == j)
+        check_true("四个时间点分别落在第 1/2/3/4 格上（真的在一格格推进）", hits == 4,
+                   f"{hits}/4 命中")
+
+        # ---- ⑤ blurpad：方形漫画格进 16:9 画布不许切头切脚
+        # 做法：格子上沿画一条绿带、下沿画一条品红带 —— 带子还在就说明整格都在
+        sq = Image.new("RGB", (400, 400), (110, 110, 110))
+        d2 = ImageDraw.Draw(sq)
+        d2.rectangle([0, 0, 399, 46], fill=(0, 200, 0))
+        d2.rectangle([0, 354, 399, 399], fill=(250, 0, 250))
+        band = nd / "band.jpg"
+        sq.save(band, quality=98)
+
+        def strips(bgpath):
+            img = Image.open(bgpath).convert("RGB")
+            w, h = img.size
+
+            def hit(rgb, y0, y1, tol=45):
+                xs = range(int(w * 0.40), int(w * 0.60), 6)
+                ys = [y for y in range(int(h * y0), int(h * y1), 2)
+                      if sum(1 for x in xs
+                             if all(abs(img.getpixel((x, y))[i] - rgb[i]) < tol
+                                    for i in range(3))) >= 0.6 * len(list(xs))]
+                return bool(ys)
+
+            return hit((0, 200, 0), 0.0, 0.20), hit((250, 0, 250), 0.80, 1.0)
+
+        # sheet 模式：整张一起展示 —— 随便哪一帧都应该同时看得到四个格子
+        cfg_sheet = load_config()
+        cfg_sheet.comic["mode"] = "sheet"
+        out_sheet = shotvideo.encode_comic_shot(work, sheet, "s.mp4", (1280, 720), 6.0, cfg_sheet,
+                                                slide_root=slide, stem="s", motion_mode=0)
+        fr2 = nd / "sheet_f.jpg"
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "3.0",
+                        "-i", str(out_sheet), "-frames:v", "1", "-q:v", "1", "-y", str(fr2)],
+                       check=True)
+        img2 = Image.open(fr2).convert("RGB")
+        w2, h2 = img2.size
+        quads = [(0.35, 0.36), (0.65, 0.36), (0.35, 0.62), (0.65, 0.62)]
+        seen = []
+        for fx, fy in quads:
+            px = img2.getpixel((int(w2 * fx), int(h2 * fy)))
+            seen.append(min(sum(abs(px[i] - c[i]) for i in range(3)) for c in cols) < 150)
+        check_true("mode=sheet：一帧里四格同时可见（不再一格格切）",
+                   sum(seen) >= 3, f"四角命中 {sum(seen)}/4")
+
+        for fit, want in (("blurpad", True), ("cover", False)):
+            media.build_layers(nd / f"b_{fit}_bg.jpg", nd / f"b_{fit}_fg.png", (1920, 1080),
+                               cfg, image_path=band, fit=fit, darken=0.0)
+            g, m = strips(nd / f"b_{fit}_bg.jpg")
+            check_true(f"fit={fit}：整格可见 = {want}", (g and m) is want,
+                       f"上沿 {g} 下沿 {m}")
+
+
 def main() -> int:
     test_sanitize()
     test_fix_line_punct()
@@ -2328,6 +2549,8 @@ def main() -> int:
     test_renumber_and_feedback()
     test_tts_speed_plumbing()
     test_cover()
+    test_intro_and_cover_style()
+    test_comic()
     test_clip_index()
     test_clip_normalize()
     test_crop_subtitle_band()
