@@ -370,12 +370,14 @@ def api_log_stream():
             try:
                 msg = _log_queue.get(timeout=2)
                 # SSE 格式：data: ...\n\n
-                yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'msg': msg}, ensure_ascii=False)}\n\n"
             except queue.Empty:
                 # 心跳：保持连接，顺便告诉前端任务状态
                 yield f": keepalive {json.dumps({'running': _task['running']})}\n\n"
     return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-1": "no"})
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                             "X-Accel-Buffering": "no"},
+                    direct_passthrough=True)
 
 
 def main():

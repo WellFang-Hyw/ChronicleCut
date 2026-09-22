@@ -307,8 +307,10 @@ function startSSE() {
   SSE = new EventSource('/api/log/stream');
   SSE.onmessage = function(ev) {
     if (ev.data.startsWith('{')) {
-      const msg = JSON.parse(ev.data);
-      appendLog(msg);
+      const d = JSON.parse(ev.data);
+      appendLog(d.msg || d.message || ev.data);
+    } else {
+      appendLog(ev.data);
     }
   };
   SSE.onerror = function() { SSE.close(); };
