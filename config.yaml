@@ -18,10 +18,10 @@ story:
   # 不用改代码；它会被并进选题池，自动选题/按类型过滤/避开最近类型/查重都生效。
   user_topics: "data/topics_user.json"
   # 目标总时长（秒）。需求是 5-10 分钟，默认 7 分钟（居中）。
-  target_total_seconds: 420
+  target_total_seconds: 1200
   # 硬性区间：成片语音总时长必须落在这个范围内，超了会自适应改写
-  min_total_seconds: 300      # 5 分钟
-  max_total_seconds: 600      # 10 分钟
+  min_total_seconds: 900      # 15 分钟
+  max_total_seconds: 1500      # 25 分钟
   # 语速换算：中文播报实测值。★ 换音色或改语速后必须重新校准这个数字。
   #
   # 当前值来源（2026-09-15，系统音色 audiobook_male_1 / speed=1.1）：
@@ -52,8 +52,8 @@ story:
   chars_per_second: 4.70
   # 章节数 + 每章目标时长（秒）
   # ★ 时长主要靠这两个旋钮；target_total_seconds 只用来算比例和打日志
-  chapters: 6
-  seconds_per_chapter: 68
+  chapters: 12
+  seconds_per_chapter: 100
   # 每个「分镜」的目标时长（秒）。一个分镜 = 一张图 + 一段字幕 + 一段语音
   # 分镜越短画面切换越快，20-25 秒是比较耐看的节奏
   seconds_per_scene: 22
@@ -85,13 +85,13 @@ material:
 #    把下面 provider 改成别的，启动时直接报错，不会悄悄换掉文本模型。
 #    CLI 的 --provider 也只接受 deepseek。
 llm:
-  # 2026-09-17 用户要求：写稿改用 MiniMax，校验（verify.provider）用 DeepSeek。
-  # 「写稿与校验用不同模型」是刻意的 —— 同一模型常常看不见自己的错。
-  # 注意：default 仍是 deepseek；切到别的 provider 必须同时打开下面的 allow_nondeepseek_text，
-  # 否则 config.assert_text_provider() 会在启动时报错拦下（这道闸门是 2026-09-15 定的，
-  # 2026-09-17 从「硬锁死」改成「显式开关＋醒目横幅」）。
-  provider: "minimax"
-  allow_nondeepseek_text: true
+  # 2026-09-22 调整：大纲用 MiniMax，写稿回归 DeepSeek，校验仍 DeepSeek。
+  # 三步分工：outline_provider=minimax 出大纲骨架（结构感好）→ DeepSeek 写稿（史实稳）→ DeepSeek 校验。
+  # ⚠️ 写稿与校验同用 DeepSeek（同一模型看不见自己的错），人工通读那道不能省（护栏 47）。
+  provider: "deepseek"
+  # 大纲（outline.build_outline）走 MiniMax：它的结构感更好（问题链、由浅及深）。
+  # 不填则跟 provider 一致。不受 allow_nondeepseek_text 闸门管（照 verify_provider 模式）。
+  outline_provider: "minimax"
   max_tokens: 8192
   max_tokens_cap: 32768
   timeout: 180

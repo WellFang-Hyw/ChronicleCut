@@ -164,8 +164,22 @@ def _resolve_topic(cfg, args):
                 log.error("  · 确实要重做：加 --allow-duplicate")
                 raise SystemExit(2)
             log.warning("%s  —— 已指定 --allow-duplicate，继续", detail)
-        built = _build_topic(args.topic, getattr(args, "topic_type", ""),
-                             getattr(args, "topic_desc", ""), user)
+        # 如果 -t 给的标题正好在用户池子里（如系列条目），从池子带出 series/ep；
+        # 用户手填的 --topic-type/--topic-desc 优先，没填就用池子里的。
+        matched = None
+        if user:
+            for tp in user.topics:
+                if tp.title == args.topic:
+                    matched = tp
+                    break
+        built = _build_topic(
+            args.topic,
+            getattr(args, "topic_type", "") or (matched.type if matched else ""),
+            getattr(args, "topic_desc", "") or (matched.desc if matched else ""),
+            user,
+            series=(matched.series if matched else ""),
+            ep=(matched.ep if matched else 0),
+        )
         if built.type:
             log.info("本期类型（手动指定）：%s（%s）", built.type,
                      topics.type_desc(built.type, user) or "—")

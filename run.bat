@@ -1,56 +1,58 @@
 @echo off
 REM ============================================================
-REM  historical_story_gen ä¸€é”®å…¥å£
+REM  historical_story_gen Ò»¼üÈë¿Ú
 REM
-REM    run.bat                     éšæœºé¢˜æï¼Œå‡ºæ¨ªå±+ç«–å±ä¸¤ç‰ˆ
-REM    run.bat -t "èµ¤å£ä¹‹æˆ˜"        æŒ‡å®šé¢˜æ
-REM    run.bat --minutes 9         ç›®æ ‡ 9 åˆ†é’Ÿ
-REM    run.bat plan                åªå†™ç¨¿ï¼Œä¸å‡ºè¯­éŸ³å’Œè§†é¢‘
-REM    run.bat probe-tts           å®æµ‹è¯­é€Ÿï¼ˆæ¢éŸ³è‰²åæ ¡å‡†ï¼‰
-REM    run.bat probe-images        æ£€æŸ¥å›¾æºé€šä¸é€š
-REM    run.bat voices              åˆ—å‡º MiniMax éŸ³è‰²
-REM    run.bat smoke               é›¶ LLM çš„åª’ä½“é“¾è·¯å†’çƒŸæµ‹è¯•ï¼ˆé™æ€å›¾è·¯çº¿ï¼‰
-REM    run.bat smoke-clips         é›¶ API å†’çƒŸï¼šå½±è§†åˆ‡ç‰‡ + EDL å‰ªè¾‘é“¾è·¯
+REM    run.bat                     Ëæ»úÌâ²Ä£¬³öºáÆÁ+ÊúÆÁÁ½°æ
+REM    run.bat -t "³à±ÚÖ®Õ½"        Ö¸¶¨Ìâ²Ä
+REM    run.bat --minutes 9         Ä¿±ê 9 ·ÖÖÓ
+REM    run.bat plan                Ö»Ğ´¸å£¬²»³öÓïÒôºÍÊÓÆµ
+REM    run.bat probe-tts           Êµ²âÓïËÙ£¨»»ÒôÉ«ºóĞ£×¼£©
+REM    run.bat probe-images        ¼ì²éÍ¼Ô´Í¨²»Í¨
+REM    run.bat voices              ÁĞ³ö MiniMax ÒôÉ«
+REM    run.bat smoke               Áã LLM µÄÃ½ÌåÁ´Â·Ã°ÑÌ²âÊÔ£¨¾²Ì¬Í¼Â·Ïß£©
+REM    run.bat smoke-clips         Áã API Ã°ÑÌ£ºÓ°ÊÓÇĞÆ¬ + EDL ¼ô¼­Á´Â·
 REM
-REM    run.bat agent               çœ‹ç”Ÿäº§çº¿å¡åœ¨å“ªã€ä¸‹ä¸€æ­¥è¯¥å¹²ä»€ä¹ˆ â† åˆ‡ç‰‡è·¯çº¿å…¥å£
-REM    run.bat agent --stage 1 -t "é¢˜æ"  å‡ºè„šæœ¬ + åˆ†é•œ + ç´ æéœ€æ±‚æ¸…å•ï¼ˆç„¶ååœä¸‹ç­‰ä½ å‰ªç´ æï¼‰
-REM    run.bat agent --stage 2           AI æ’é•œå¤´(EDL) + æ¸²æŸ“ + è‡ªæ£€ï¼Œå‡ºæˆç‰‡
-REM    run.bat test                é›¶æˆæœ¬å›å½’æµ‹è¯•
-REM    run.bat history             çœ‹ç”Ÿæˆè®°å½•ï¼ˆå·²åšè¿‡å“ªäº›æ•…äº‹ï¼‰
-REM    run.bat history --backfill  æŠŠ data\output ä¸‹å·²æœ‰ metadata è¡¥å½•è¿›è®°å½•
+REM    run.bat agent               ¿´Éú²úÏß¿¨ÔÚÄÄ¡¢ÏÂÒ»²½¸Ã¸ÉÊ²Ã´ ¡û ÇĞÆ¬Â·ÏßÈë¿Ú
+REM    run.bat agent --stage 1 -t "Ìâ²Ä"  ³ö½Å±¾ + ·Ö¾µ + ËØ²ÄĞèÇóÇåµ¥£¨È»ºóÍ£ÏÂµÈÄã¼ôËØ²Ä£©
+REM    run.bat agent --stage 2           AI ÅÅ¾µÍ·(EDL) + äÖÈ¾ + ×Ô¼ì£¬³ö³ÉÆ¬
+REM    run.bat test                Áã³É±¾»Ø¹é²âÊÔ
+REM    run.bat history             ¿´Éú³É¼ÇÂ¼£¨ÒÑ×ö¹ıÄÄĞ©¹ÊÊÂ£©
+REM    run.bat history --backfill  °Ñ data\output ÏÂÒÑÓĞ metadata ²¹Â¼½ø¼ÇÂ¼
 REM
-REM  æ—¥å¿—åŒæ—¶åœ¨å±å¹•ä¸Šå’Œ data\output\ ä¸‹çš„ log æ–‡ä»¶é‡Œã€‚
+REM  ÈÕÖ¾Í¬Ê±ÔÚÆÁÄ»ÉÏºÍ data\output\ ÏÂµÄ log ÎÄ¼şÀï¡£
 REM ============================================================
 setlocal
 cd /d "%~dp0"
 
-REM Hermes ç­‰ç¯å¢ƒä¼šæ³¨å…¥ uv çš„ PYTHONHOMEï¼Œä¼šè®©åˆ«çš„ Python è§£é‡Šå™¨å´©åœ¨
-REM "AssertionError: SRE module mismatch"ã€‚æ¸…æ‰å®ƒå†è·‘ã€‚
+REM Hermes µÈ»·¾³»á×¢Èë uv µÄ PYTHONHOME£¬»áÈÃ±ğµÄ Python ½âÊÍÆ÷±ÀÔÚ
+REM "AssertionError: SRE module mismatch"¡£ÇåµôËüÔÙÅÜ¡£
 set PYTHONHOME=
 set UV_INTERNAL__PYTHONHOME=
+REM Clear stale MiniMax key from env (may be expired); config falls back to registry.
+set MINIMAX_API_KEY=
 set PYTHONUTF8=1
 
 if exist ".venv\Scripts\python.exe" (
   set "PY=.venv\Scripts\python.exe"
 ) else (
-  echo [!] æ²¡æ‰¾åˆ° .venvã€‚é¦–æ¬¡ä½¿ç”¨è¯·å…ˆæ‰§è¡Œï¼š
+  echo [!] Ã»ÕÒµ½ .venv¡£Ê×´ÎÊ¹ÓÃÇëÏÈÖ´ĞĞ£º
   echo     python -m venv .venv
   echo     .venv\Scripts\python.exe -m pip install -e .
-  echo ^(ä¾èµ–æ¸…å•åœ¨ pyproject.tomlï¼›å…è´¹å…œåº•è¯­éŸ³è¦é¢å¤–è£…ï¼špip install edge-tts^)
+  echo ^(ÒÀÀµÇåµ¥ÔÚ pyproject.toml£»Ãâ·Ñ¶µµ×ÓïÒôÒª¶îÍâ×°£ºpip install edge-tts^)
   set "PY=python"
 )
 
 if "%1"=="" (
-  echo === éšæœºé¢˜æï¼Œå¼€å§‹ç”Ÿæˆ ===
+  echo === Ëæ»úÌâ²Ä£¬¿ªÊ¼Éú³É ===
 ) else (
-  echo === å‚æ•°: %* ===
+  echo === ²ÎÊı: %* ===
 )
 
 "%PY%" -u run.py %*
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === ç»“æŸï¼Œé€€å‡ºç  %EXITCODE% ===
+echo === ½áÊø£¬ÍË³öÂë %EXITCODE% ===
 if "%EXITCODE%"=="0" (
-  echo æˆç‰‡åœ¨ data\output\ ä¸‹ã€‚
+  echo ³ÉÆ¬ÔÚ data\output\ ÏÂ¡£
 )
 endlocal & exit /b %EXITCODE%

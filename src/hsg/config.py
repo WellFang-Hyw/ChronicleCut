@@ -209,6 +209,18 @@ def verify_provider(cfg: Config) -> str:
     return p
 
 
+def outline_provider(cfg: Config) -> str:
+    """大纲（outline.build_outline）用哪个模型：默认跟 llm.provider 一致。
+
+    2026-09-22 用户要求：大纲走 MiniMax（结构感好），写稿回归 DeepSeek（史实稳）。
+    不受 allow_nondeepseek_text 闸门管 —— 这是显式指定的副线，照 verify_provider 模式。
+    """
+    p = str(cfg.llm.get("outline_provider") or cfg.llm.provider or TEXT_PROVIDER_DEFAULT)
+    if p not in TEXT_PROVIDERS_ALLOWED:
+        raise RuntimeError(f"outline_provider 只支持 {TEXT_PROVIDERS_ALLOWED}，收到 {p!r}")
+    return p
+
+
 def provider_banner(cfg: Config) -> str:
     """每次运行都打印的分工横幅 —— 一眼看清谁在干活。"""
     llm_sub = cfg.llm[str(cfg.llm.provider)]

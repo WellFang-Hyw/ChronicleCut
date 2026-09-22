@@ -9,11 +9,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from .config import ApiKeys, Config
 
@@ -41,6 +42,11 @@ class TTSFailed(RuntimeError):
     """所有分镜的语音都合成失败（余额不足 / 限流 / 没装兜底语音）。"""
 
 
+class TTSRateLimited(RuntimeError):
+    """MiniMax TTS 触发 RPM 限流（HTTP 429）。临时性错误——等 RPM 窗口重置后可恢复，
+    不该触发 edge-tts 兜底（会换来另一种音色，一个视频两种声音）。"""
+
+
 class MiniMaxTTS:
     def __init__(self, cfg: Config, keys: ApiKeys | None = None):
         self.cfg = cfg
@@ -63,7 +69,8 @@ class MiniMaxTTS:
     def close(self) -> None:
         self._client.close()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, max=20), reraise=True)
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, max=20),
+           retry=retry_if_not_exception_type(TTSRateLimited), reraise=True)
     def synth(self, text: str, out_path: Path, *, speed: float | None = None) -> Path:
         payload = {
             "model": self.model,
@@ -91,12 +98,24 @@ class MiniMaxTTS:
                 "Content-Type": "application/json",
             },
         )
+        # RPM 限流（429）单独标记：交给上层做长等待重试，不在 synth 层短重试
+        # （20 秒不够等 RPM 按分钟计的窗口恢复，3 次短重试都失败就触发兜底 = 音色不一致）
+        if resp.status_code == 429:
+            raise TTSRateLimited(
+                f"MiniMax TTS RPM 限流 (HTTP 429): {resp.text[:200]}")
         resp.raise_for_status()
         data = resp.json()
         base = data.get("base_resp") or {}
-        if base.get("status_code") not in (0, None):
+        sc = base.get("status_code")
+        if sc not in (0, None):
+            # 1002 = RPM 限流：MiniMax 返回 HTTP 200 + 业务层 1002（不是 HTTP 429）。
+            # 临时性错误 → 抛 TTSRateLimited 交给上层等待重试，不触发 edge-tts 兜底。
+            if sc == 1002:
+                raise TTSRateLimited(
+                    f"MiniMax TTS RPM 限流 (status {sc}): {base.get('status_msg')}"
+                )
             raise RuntimeError(
-                f"MiniMax TTS 失败: {base.get('status_code')} {base.get('status_msg')}"
+                f"MiniMax TTS 失败: {sc} {base.get('status_msg')}"
             )
         audio_hex = (data.get("data") or {}).get("audio") or ""
         if not audio_hex:
@@ -188,7 +207,30 @@ class TTS:
                 self._mm.synth(text, out_path, speed=eff)
             else:
                 edge_synth(text, out_path, self.edge_voice, speed=eff)
+        except TTSRateLimited:
+            # ★ RPM 限流：等待重试，不轻易兜底（音色一致性优先）。
+            # RPM 按分钟计窗口，等 60 秒通常能恢复；最多重试 5 次（约 5 分钟）。
+            # 只有限流持续不恢复才兜底 edge-tts（那会换来另一种音色，一个视频两种声音）。
+            for attempt in range(1, 6):
+                wait_sec = 60
+                log.warning("MiniMax TTS RPM 限流，等待 %d 秒后重试（第 %d/5 次）",
+                            wait_sec, attempt)
+                time.sleep(wait_sec)
+                try:
+                    self._mm.synth(text, out_path, speed=eff)
+                    break
+                except TTSRateLimited:
+                    continue
+            else:
+                if self.fallback:
+                    log.warning("⚠️ MiniMax TTS 限流 5 次仍失败，回退 edge-tts"
+                                "（音色 %s，与配置音色不一致）", self.edge_voice)
+                    out_path = out_path.with_suffix(".edge.mp3")
+                    edge_synth(text, out_path, self.edge_voice, speed=eff)
+                else:
+                    raise TTSRateLimited("限流 5 次仍失败，且未开启兜底")
         except Exception as exc:  # noqa: BLE001
+            # 非限流错误（余额不足 1008 / key 失效 / 网络超时）→ 兜底 edge-tts
             if not (self.fallback and self.provider == "minimax"):
                 raise
             log.warning("MiniMax TTS 失败（%s），回退 edge-tts（免费，音色 %s）",

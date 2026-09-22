@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>历史小故事生成器</title>
+<style>
+  :root {
+    --bg: #1a1a2e; --card: #16213e; --accent: #e94560; --text: #eee; --muted: #888;
+    --border: #2a2a4a; --ok: #4ecca3; --warn: #f0a22a; --input: #0f3460;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text);
+         font-size: 14px; padding: 16px; }
+  h1 { font-size: 20px; margin-bottom: 12px; color: var(--accent); }
+  h2 { font-size: 15px; margin: 12px 0 8px; color: var(--warn); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; max-width: 1400px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  label { display: block; margin: 8px 0 3px; color: var(--muted); font-size: 12px; }
+  select, input[type="text"], input[type="number"] {
+    width: 100%; padding: 6px 8px; background: var(--input); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; font-size: 13px;
+  }
+  input[type="range"] { width: 100%; }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: normal; }
+  tr.done td { color: var(--ok); }
+  tr.done td:first-child::before { content: "✓ "; color: var(--ok); }
+  #genBtn {
+    width: 100%; padding: 12px; background: var(--accent); color: white; border: none;
+    border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 12px; font-weight: bold;
+  }
+  #genBtn:disabled { background: var(--muted); cursor: not-allowed; }
+  #logArea {
+    background: #0d0d1a; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; font-family: Consolas, monospace; font-size: 12px; color: #aaa;
+    height: 300px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5;
+  }
+  .log-line { margin: 0; }
+  .log-ERROR { color: var(--accent); }
+  .log-WARNING { color: var(--warn); }
+  .log-INFO { color: #8ecae6; }
+  #status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
+  .status-idle { background: var(--muted); }
+  .status-running { background: var(--ok); animation: pulse 1.5s infinite; }
+  .status-error { background: var(--accent); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+  .outputs { background: var(--ok); color: #000; padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>历史小故事视频生成器</h1>
+<div style="margin-bottom:8px">状态：<span id="status" class="status-idle">空闲</span></div>
+<div class="grid">
+  <!-- 左栏：配置 -->
+  <div class="card">
+    <h2>选题</h2>
+    <label>系列（留空=非系列选题）</label>
+    <select id="series"><option value="">— 不指定系列 —</option></select>
+    <label>主题（留空=选系列时自动取下一集；可手填）</label>
+    <input type="text" id="topic" placeholder="如：霍光：一个臣子凭什么能换掉皇帝？">
+    <label>故事类型（L1）</label>
+    <select id="topicType"><option value="">— 自动判定 —</option></select>
+    <label>这一期讲什么（L2 描述，留空=模型生成）</label>
+    <input type="text" id="topicDesc" placeholder="一句话描述这一期讲什么">
+
+    <h2>时长</h2>
+    <label>目标时长 <span id="minutesLabel">20</span> 分钟</label>
+    <input type="range" id="minutes" min="5" max="25" step="1" value="20">
+    <div class="row">
+      <div><label>章节数</label><input type="number" id="chapters" min="3" max="20" value="12"></div>
+      <div><label>每章秒数</label><input type="number" id="spc" min="40" max="200" step="5" value="100"></div>
+    </div>
+
+    <h2>模型</h2>
+    <div class="row">
+      <div><label>大纲模型</label><select id="outlineProvider"></select></div>
+      <div><label>写稿模型</label><select id="llmProvider"></select></div>
+    </div>
+    <div class="row">
+      <div><label>校验模型</label><select id="verifyProvider"></select></div>
+      <div><label>切入方式</label><select id="angleMode"><option value="small">小切口</option><option value="event">事件式</option></select></div>
+    </div>
+
+    <h2>语音</h2>
+    <div class="row">
+      <div><label>TTS 引擎</label><select id="ttsProvider"></select></div>
+      <div><label>音色 ID</label><select id="voiceId"></select></div>
+    </div>
+    <label>语速 <span id="speedLabel">1.1</span></label>
+    <input type="range" id="speed" min="0.8" max="1.5" step="0.05" value="1.1">
+
+    <h2>输出</h2>
+    <div class="row">
+      <div><label>画幅</label><select id="orientations">
+        <option value="both">横屏+竖屏</option><option value="landscape">仅横屏</option><option value="portrait">仅竖屏</option>
+      </select></div>
+    </div>
+    <label><input type="checkbox" id="allowDup" style="width:auto;margin-right:6px">允许重做已生成过的题材</label>
+
+    <button id="genBtn" onclick="onGenerate()">生成视频</button>
+  </div>
+
+  <!-- 右栏：选题池 + 记录 -->
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <h2>添加选题</h2>
+      <label>类型</label>
+      <select id="addType"><option value="">— 选已有类型 —</option><option value="__new__">＋ 新开类型…</option></select>
+      <div id="newTypeRow" style="display:none">
+        <label>新类型名称</label>
+        <input type="text" id="addNewType" placeholder="如：近代交通">
+        <label>新类型描述（这一类讲什么）</label>
+        <input type="text" id="addTypeDesc" placeholder="这一类故事讲什么">
+      </div>
+      <label>标题（15-30 字，小切口：具体疑问）</label>
+      <input type="text" id="addTitle" placeholder="如：午门之外：一场秋决是怎么走完的？">
+      <label>描述（35-60 字；别写数字与结论）</label>
+      <input type="text" id="addDesc" placeholder="这一期到底讲什么、要回答什么">
+      <div class="row">
+        <div><label>系列（留空=非系列）</label><input type="text" id="addSeries" placeholder="如：古代十大权臣"></div>
+        <div><label>集号</label><input type="number" id="addEp" min="1"></div>
+      </div>
+      <label>系列说明（建第一集时给一次）</label>
+      <input type="text" id="addSeriesDesc" placeholder="这个系列讲什么">
+      <label>切入方式</label>
+      <select id="addMode"><option value="small">小切口</option><option value="event">事件式</option></select>
+      <button onclick="onAddTopic()" style="width:100%;padding:10px;background:var(--ok);color:#000;border:none;border-radius:6px;font-size:14px;cursor:pointer;margin-top:8px">添加选题</button>
+    </div>
+    <div class="card">
+      <h2>选题池</h2>
+      <div id="topicsList"></div>
+    </div>
+    <div class="card">
+      <h2>生成记录</h2>
+      <div id="historyList"></div>
+    </div>
+    <div class="card">
+      <h2>实时日志</h2>
+      <div id="logArea"></div>
+      <div id="outputs"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let SSE = null;
+
+async function init() {
+  const [cfg, topics, hist] = await Promise.all([
+    fetch('/api/config').then(r => r.json()),
+    fetch('/api/topics').then(r => r.json()),
+    fetch('/api/history').then(r => r.json()),
+  ]);
+  renderConfig(cfg);
+  renderTopics(topics);
+  renderHistory(hist);
+  checkTask();
+}
+
+function renderConfig(c) {
+  // 系列
+  const sel = document.getElementById('series');
+  (c.series || []).forEach(s => {
+    const o = document.createElement('option'); o.value = s; o.textContent = s;
+    sel.appendChild(o);
+  });
+  // 类型
+  const tt = document.getElementById('topicType');
+  Object.entries(c.types || {}).forEach(([k, v]) => {
+    const o = document.createElement('option'); o.value = k;
+    o.textContent = `${k}（${v}）`; tt.appendChild(o);
+  });
+  // 模型下拉
+  fillSelect('outlineProvider', c.providers.llm, c.llm.outline_provider);
+  fillSelect('llmProvider', c.providers.llm, c.llm.provider);
+  fillSelect('verifyProvider', c.providers.llm, c.verify.provider);
+  fillSelect('ttsProvider', c.providers.tts, c.tts.provider);
+  // 音色
+  const vi = document.getElementById('voiceId');
+  (c.voice_refs || []).forEach(v => {
+    const o = document.createElement('option'); o.value = v.id;
+    o.textContent = `${v.id}（${v.desc}）`; vi.appendChild(o);
+  });
+  vi.value = c.tts.voice_id;
+  // 时长/章节
+  document.getElementById('minutes').value = Math.round(c.story.target_total_seconds / 60);
+  document.getElementById('minutesLabel').textContent = Math.round(c.story.target_total_seconds / 60);
+  document.getElementById('chapters').value = c.story.chapters;
+  document.getElementById('spc').value = c.story.seconds_per_chapter;
+  document.getElementById('angleMode').value = c.story.angle_mode;
+  document.getElementById('speed').value = c.tts.speed;
+  document.getElementById('speedLabel').textContent = c.tts.speed;
+  // 添加选题面板的类型下拉
+  const at = document.getElementById('addType');
+  (c.types ? Object.keys(c.types) : []).forEach(k => {
+    const o = document.createElement('option'); o.value = k; o.textContent = k;
+    at.appendChild(o);
+  });
+}
+
+function fillSelect(id, options, selected) {
+  const el = document.getElementById(id);
+  (options || []).forEach(v => {
+    const o = document.createElement('option'); o.value = v; o.textContent = v;
+    if (v === selected) o.selected = true;
+    el.appendChild(o);
+  });
+}
+
+function renderTopics(t) {
+  const div = document.getElementById('topicsList');
+  let html = '';
+  // 系列分组
+  for (const [name, eps] of Object.entries(t.series || {})) {
+    const desc = (t.series_desc || {})[name] || '';
+    const done = eps.filter(e => e.done).length;
+    html += `<h2 style="color:var(--ok)">■ ${name} ${done}/${eps.length}集</h2>`;
+    if (desc) html += `<div class="hint">${desc}</div>`;
+    html += '<table><tr><th>集</th><th>标题</th><th>类型</th><th>描述</th></tr>';
+    eps.forEach(e => {
+      html += `<tr class="${e.done ? 'done' : ''}" style="cursor:pointer"
+        onclick="pickTopic('${e.title.replace(/'/g, "\\'")}','${e.type}','')">
+        <td>${e.ep}</td><td>${e.title}</td><td>${e.type}</td><td>${e.desc}</td></tr>`;
+    });
+    html += '</table>';
+  }
+  // 非系列
+  if ((t.standalone || []).length) {
+    html += '<h2>非系列选题</h2><table><tr><th>标题</th><th>类型</th><th>描述</th></tr>';
+    t.standalone.forEach(e => {
+      html += `<tr class="${e.done ? 'done' : ''}" style="cursor:pointer"
+        onclick="pickTopic('${e.title.replace(/'/g, "\\'")}','${e.type}','')">
+        <td>${e.title}</td><td>${e.type}</td><td>${e.desc}</td></tr>`;
+    });
+    html += '</table>';
+  }
+  if (!html) html = '<div class="hint">选题池为空。用 scripts/add_topic.py 添加。</div>';
+  div.innerHTML = html;
+}
+
+function pickTopic(title, type, desc) {
+  document.getElementById('topic').value = title;
+  if (type) document.getElementById('topicType').value = type;
+  if (desc) document.getElementById('topicDesc').value = desc;
+  document.getElementById('topic').scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderHistory(recs) {
+  const div = document.getElementById('historyList');
+  if (!recs || !recs.length) { div.innerHTML = '<div class="hint">还没有生成记录。</div>'; return; }
+  let html = `<table><tr><th>#</th><th>时间</th><th>标题</th><th>成片</th><th>配音</th><th>分镜</th></tr>`;
+  recs.forEach((r, i) => {
+    const vs = r.video_seconds || {}; const v = Math.max(...Object.values(vs));
+    html += `<tr><td>${i+1}</td><td>${(r.generated_at||'').slice(0,16).replace('T',' ')}</td>
+      <td>${(r.title||'').slice(0,30)}</td><td>${v ? (v/60).toFixed(1)+'分' : '-'}</td>
+      <td>${(r.speech_minutes||0).toFixed(1)}分</td><td>${r.scenes||0}</td></tr>`;
+  });
+  html += '</table>';
+  div.innerHTML = html;
+}
+
+async function onGenerate() {
+  const params = {
+    topic: document.getElementById('topic').value,
+    series: document.getElementById('series').value,
+    topic_type: document.getElementById('topicType').value,
+    topic_desc: document.getElementById('topicDesc').value,
+    minutes: parseFloat(document.getElementById('minutes').value),
+    chapters: parseInt(document.getElementById('chapters').value),
+    seconds_per_chapter: parseInt(document.getElementById('spc').value),
+    outline_provider: document.getElementById('outlineProvider').value,
+    llm_provider: document.getElementById('llmProvider').value,
+    verify_provider: document.getElementById('verifyProvider').value,
+    tts_provider: document.getElementById('ttsProvider').value,
+    voice_id: document.getElementById('voiceId').value,
+    speed: parseFloat(document.getElementById('speed').value),
+    angle_mode: document.getElementById('angleMode').value,
+    orientations: document.getElementById('orientations').value,
+    allow_duplicate: document.getElementById('allowDup').checked,
+  };
+  if (!params.topic && !params.series) {
+    alert('请选择系列或填写主题'); return;
+  }
+  const btn = document.getElementById('genBtn');
+  btn.disabled = true; btn.textContent = '生成中...';
+  setStatus('running', '生成中');
+  document.getElementById('logArea').innerHTML = '';
+  document.getElementById('outputs').innerHTML = '';
+  try {
+    const r = await fetch('/api/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(params),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert(d.error || '启动失败'); btn.disabled = false; btn.textContent = '生成视频'; setStatus('idle','空闲'); return; }
+    startSSE();
+  } catch(e) { alert('请求失败: ' + e); btn.disabled = false; btn.textContent = '生成视频'; setStatus('idle','空闲'); }
+}
+
+function startSSE() {
+  if (SSE) SSE.close();
+  SSE = new EventSource('/api/log/stream');
+  SSE.onmessage = function(ev) {
+    if (ev.data.startsWith('{')) {
+      const msg = JSON.parse(ev.data);
+      appendLog(msg);
+    }
+  };
+  SSE.onerror = function() { SSE.close(); };
+}
+
+function appendLog(msg) {
+  const area = document.getElementById('logArea');
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  // 按级别着色
+  const m = msg.match(/\b(ERROR|WARNING|INFO)\b/);
+  if (m) div.classList.add('log-' + m[1]);
+  div.textContent = msg;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+  // 检查任务状态
+  if (msg.includes('生成完成') || msg.includes('生成失败') || msg.includes('生成中止')) {
+    setTimeout(checkTask, 500);
+  }
+}
+
+async function checkTask() {
+  try {
+    const t = await fetch('/api/task').then(r => r.json());
+    if (!t.running) {
+      const btn = document.getElementById('genBtn');
+      btn.disabled = false; btn.textContent = '生成视频';
+      if (t.error) { setStatus('error', '失败'); appendLog('错误: ' + t.error); }
+      else if (t.has_result) { setStatus('idle', '完成'); }
+      else { setStatus('idle', '空闲'); }
+      if (t.outputs && t.outputs.length) {
+        document.getElementById('outputs').innerHTML =
+          '<div class="outputs">成片：' + t.outputs.map(o => `<br>${o}`).join('') + '</div>';
+      }
+      // 刷新记录
+      fetch('/api/history').then(r => r.json()).then(renderHistory);
+    }
+  } catch(e) {}
+}
+
+function setStatus(cls, text) {
+  const s = document.getElementById('status');
+  s.className = 'status-' + cls; s.textContent = text;
+}
+
+// 滑块联动
+document.getElementById('minutes').oninput = e => {
+  document.getElementById('minutesLabel').textContent = e.target.value;
+  const total = e.target.value * 60;
+  const spc = parseInt(document.getElementById('spc').value);
+  document.getElementById('chapters').value = Math.round(total / spc);
+};
+document.getElementById('spc').oninput = e => {
+  const total = parseInt(document.getElementById('minutes').value) * 60;
+  document.getElementById('chapters').value = Math.round(total / e.target.value);
+};
+document.getElementById('speed').oninput = e => {
+  document.getElementById('speedLabel').textContent = e.target.value;
+};
+
+document.getElementById('addType').onchange = function() {
+  document.getElementById('newTypeRow').style.display = this.value === '__new__' ? 'block' : 'none';
+};
+
+async function onAddTopic() {
+  const typeSel = document.getElementById('addType').value;
+  let type = typeSel, typeDesc = '';
+  if (typeSel === '__new__') {
+    type = document.getElementById('addNewType').value.trim();
+    typeDesc = document.getElementById('addTypeDesc').value.trim();
+    if (!type) { alert('请填新类型名称'); return; }
+  }
+  if (!document.getElementById('addTitle').value.trim()) { alert('请填标题'); return; }
+  const params = {
+    type, type_desc: typeDesc,
+    title: document.getElementById('addTitle').value.trim(),
+    desc: document.getElementById('addDesc').value.trim(),
+    mode: document.getElementById('addMode').value,
+    series: document.getElementById('addSeries').value.trim(),
+    ep: parseInt(document.getElementById('addEp').value) || 0,
+    series_desc: document.getElementById('addSeriesDesc').value.trim(),
+  };
+  try {
+    const r = await fetch('/api/topic/add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(params),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert(d.error); return; }
+    alert(d.message + (d.warn ? '\n⚠️ ' + d.warn : ''));
+    document.getElementById('addTitle').value = '';
+    document.getElementById('addDesc').value = '';
+    document.getElementById('addSeries').value = '';
+    document.getElementById('addEp').value = '';
+    document.getElementById('addSeriesDesc').value = '';
+    // 刷新选题池 + 系列下拉
+    fetch('/api/topics').then(r => r.json()).then(renderTopics);
+    fetch('/api/config').then(r => r.json()).then(c => {
+      const sel = document.getElementById('series');
+      sel.innerHTML = '<option value="">— 不指定系列 —</option>';
+      (c.series || []).forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
+    });
+  } catch(e) { alert('请求失败: ' + e); }
+}
+
+init();
+</script>
+</body>
+</html>

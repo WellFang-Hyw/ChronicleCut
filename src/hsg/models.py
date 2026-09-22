@@ -68,6 +68,7 @@ class Story:
     title: str = ""
     angle_question: str = ""       # 本期要回答的那个具体问题（小切口模式）
     hook: str = ""                 # 开篇钩子（片头口播用）
+    outro: str = ""                # 结尾词（片尾口播用，对称 hook；2026-09-22 用户指定）
     period: str = ""               # 「东汉末年 208 年」这类表述
     period_start: int = 0          # 年代区间（公元前为负），用于年份合理性校验
     period_end: int = 0

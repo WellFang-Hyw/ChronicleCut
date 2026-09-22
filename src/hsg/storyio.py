@@ -60,6 +60,7 @@ def load_story(meta_path: Path, cfg: Config, audio_dir: Path, log_) -> tuple[Sto
         title=str(data.get("title") or ""),
         angle_question=str(data.get("angle_question") or ""),
         hook=str(data.get("hook") or ""),
+        outro=str(data.get("outro") or ""),
         # ⚠️ 这两行漏过一次，后果不小：stage 2 重建的 story 没有系列信息，
         # 于是「开场白报系列与期号」和画面顶部的系列标签**在成片里都是缺的** ——
         # 而冒烟直接构造 Story 对象，验不到这条真实路径（护栏 38 说的就是这种坑）。

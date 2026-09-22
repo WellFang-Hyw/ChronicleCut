@@ -23,7 +23,7 @@ from . import history as history_mod
 from . import topics
 from . import images as images_mod
 from . import media, shotvideo, tts as tts_mod, verify, video
-from .config import verify_provider, ApiKeys, Config, ensure_dirs, get_channel, provider_banner
+from .config import verify_provider, outline_provider, ApiKeys, Config, ensure_dirs, get_channel, provider_banner
 from .llm import LLM
 from .material import fetch_material
 from .models import Story
@@ -366,9 +366,11 @@ def run(
     # ---------- 2. 大纲
     stats = {"rule_fail": 0, "rule_warn": 0, "audit_issues": 0, "regenerated_chapters": []}
     regenerated: set[int] = set()
-    # 写稿用 llm.provider（可能被用户切成 MiniMax），审校/复检固定走 verify.provider
-    # （默认 DeepSeek）—— 两个模型互相挑错，比同模型自查靠谱。
-    with LLM(cfg, keys) as llm, \
+    # 三步分工（2026-09-22）：大纲走 outline_provider（MiniMax，结构感好），
+    # 写稿走 llm.provider（DeepSeek，史实稳），审校/复检固定走 verify.provider（DeepSeek）。
+    # ⚠️ 写稿与校验同用 DeepSeek（同模型看不见自己的错），人工通读那道不能省（护栏 47）。
+    with LLM(cfg, keys, provider=outline_provider(cfg)) as outline_llm, \
+            LLM(cfg, keys) as llm, \
             LLM(cfg, keys, provider=verify_provider(cfg)) as audit_llm:
         # ---- 选题的两级：类型（L1）+ 这一期讲什么（L2）
         # 池子里挑的题自带两级；手填的 -t 没有 → 在这里补（判类型 + 生成描述）。
@@ -378,7 +380,7 @@ def run(
             topics.Topic(title=topic, type=topic_type, desc=topic_desc), cfg, llm)
         topic_type, topic_desc = filled.type, filled.desc      # 日志由 build_outline 打
 
-        story = build_outline(topic, cfg, llm, material,
+        story = build_outline(topic, cfg, outline_llm, material,
                               topic_type=topic_type, topic_desc=topic_desc,
                               series=series, series_ep=series_ep)
 
@@ -827,17 +829,25 @@ def render_orientation(story: Story, cfg: Config, orient: str,
 
     # ---- 片尾
     if bool(v.get("outro", True)):
-        outro_dur = float(cfg.story.get("outro_seconds", 4.0))
+        outro_text = str(getattr(story, "outro", "") or "").strip()
+        # 大纲产出结尾词 → 合成 TTS 口播（对称片头 hook）；没有就固定时长静音轨。
+        if outro_text:
+            p, dur = _tts_cached(cfg, seg_root, "outro", outro_text)
+            dur = (dur + float(cfg.story.get("intro_seconds_pad", 1.2))
+                   if dur else float(cfg.story.get("outro_seconds", 4.0)))
+        else:
+            p, dur = None, float(cfg.story.get("outro_seconds", 4.0))
+        # 片尾必须有音轨：concat -c copy 遇到没音频流的片段会丢整条成片音轨（护栏 19）
+        if p is None:
+            p = video.make_silence(seg_root / "outro_silence.m4a", dur, cfg)
         bg, fg = media.build_text_card(
             slide_root / "outro_bg.jpg", slide_root / "outro_fg.png", size, cfg,
             lines=[str(cfg.story.get("outro_title") or "本期故事讲完了")],
             slogan=str(v.get("intro_slogan") or ""), subtitle=story.title,
         )
-        # 片尾没有口播，但必须补一条等长静音轨，否则成片音轨比视频短
-        silence = video.make_silence(seg_root / "outro_silence.m4a", outro_dur, cfg)
-        names.append(_encode(seg_root, "outro", bg, fg, silence, None, size, outro_dur, cfg,
+        names.append(_encode(seg_root, "outro", bg, fg, p, None, size, dur, cfg,
                              fade_in=fade, fade_out=fade, mode=2))
-        timeline.append((outro_dur, 0))
+        timeline.append((dur, 0))
 
     master = video.concat_segments(seg_root, names, f"_concat_{orient}.mp4")
     total = video.media_duration(master)
@@ -960,6 +970,13 @@ def write_script(story: Story, cfg: Config, path: Path, total: float) -> Path:
         story.hook,
         "",
     ]
+    if story.outro:
+        lines += [
+            "## 结尾",
+            "",
+            story.outro,
+            "",
+        ]
     for ch in story.chapters:
         lines += [f"## 第 {ch.index} 章　{ch.heading}", "", f"> 本章要点：{ch.summary}", ""]
         if ch.facts:
@@ -1000,6 +1017,7 @@ def write_metadata(story: Story, cfg: Config, path: Path, rows: list[dict], extr
         "period_start": story.period_start,
         "period_end": story.period_end,
         "hook": story.hook,
+        "outro": story.outro,
         "chapters": [
             {"index": c.index, "heading": c.heading, "summary": c.summary,
              "seconds_target": c.seconds, "seconds_actual": round(c.duration, 2),
